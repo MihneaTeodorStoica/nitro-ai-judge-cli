@@ -73,6 +73,7 @@ nitro-cli contests --all-pages
 nitro-cli tasks algolymp/algolymp-preojia-ix-x
 nitro-cli task algolymp/algolymp-preojia-ix-x 1
 nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --out-dir data
+nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --category statement --output TASK.md
 nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --category test_data --output test_data.zip
 nitro-cli submissions algolymp/algolymp-preojia-ix-x 1 --mode both
 nitro-cli submission 3a009d767bd5 --org algolymp --comp algolymp-preojia-ix-x --task-id 1

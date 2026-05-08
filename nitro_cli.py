@@ -44,10 +44,11 @@ UA = "Nitro CLI/0.1"
 DEFAULT_PAGE_SIZE = 20
 DEFAULT_SUBMISSION_PAGE_SIZE = 10
 TASK_FILE_CATEGORIES = {
+    "statement": "Statement",
     "train_data": "Train data",
     "test_data": "Test data",
     "sample_output": "Sample output",
-    "custom_archive": "Custom archive",
+    "custom_archive": "Starter kit",
 }
 DEFAULT_TASK_FILE_CATEGORIES = tuple(TASK_FILE_CATEGORIES)
 STATE_DIR = os.environ.get("NITRO_STATE_DIR", os.path.expanduser("~/.nitro-cli"))
@@ -323,6 +324,8 @@ def filename_from_content_disposition(value: str) -> str | None:
 
 
 def task_file_name(category: str, headers: dict[str, str]) -> str:
+    if category == "statement":
+        return "TASK.md"
     for key, value in headers.items():
         if key.lower() == "content-disposition":
             filename = filename_from_content_disposition(value)
@@ -338,6 +341,17 @@ def response_is_html(body: bytes, headers: dict[str, str]) -> bool:
             content_type = value.lower()
             break
     return "text/html" in content_type or body.lstrip().lower().startswith(b"<!doctype html")
+
+
+def task_statement_markdown(
+    cookies: tuple[str, str], bearer: str, org: str, comp: str, task_id: str
+) -> bytes:
+    payload = load_task_view(cookies, bearer, org, comp, task_id)
+    task = payload["task"]
+    title = task.get("title") or f"Task {task_id}"
+    statement = task.get("statement") or ""
+    content = f"# {title}\n\n{statement.strip()}\n"
+    return content.encode("utf-8")
 
 
 def decode_jwt_payload(token: str) -> dict[str, Any] | None:
@@ -799,16 +813,20 @@ def download_task_data(
 
     results: list[dict[str, Any]] = []
     for category in normalized_categories:
-        status, body, headers = download_task_file(
-            cookies, bearer, org, comp, task_id, category
-        )
-        if status != 200 or response_is_html(body, headers):
-            if not explicit_categories:
-                continue
-            preview = body.decode("utf-8", errors="replace")
-            raise RuntimeError(
-                f"Could not download {category}: HTTP {status}: {error_preview(preview)}"
+        if category == "statement":
+            body = task_statement_markdown(cookies, bearer, org, comp, task_id)
+            headers: dict[str, str] = {}
+        else:
+            status, body, headers = download_task_file(
+                cookies, bearer, org, comp, task_id, category
             )
+            if status != 200 or response_is_html(body, headers):
+                if not explicit_categories:
+                    continue
+                preview = body.decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    f"Could not download {category}: HTTP {status}: {error_preview(preview)}"
+                )
         path = write_task_file(
             body,
             headers,
