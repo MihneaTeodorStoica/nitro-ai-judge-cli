@@ -51,6 +51,12 @@ TASK_FILE_CATEGORIES = {
     "custom_archive": "Starter kit",
 }
 DEFAULT_TASK_FILE_CATEGORIES = tuple(TASK_FILE_CATEGORIES)
+TASK_FILE_PAGE_LABELS = {
+    "train_data": "Train Data",
+    "test_data": "Test Data",
+    "sample_output": "Sample Output",
+    "custom_archive": "Custom Archive",
+}
 STATE_DIR = os.environ.get("NITRO_STATE_DIR", os.path.expanduser("~/.nitro-cli"))
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 HISTORY_FILE = os.path.join(STATE_DIR, "history")
@@ -352,6 +358,17 @@ def task_statement_markdown(
     statement = task.get("statement") or ""
     content = f"# {title}\n\n{statement.strip()}\n"
     return content.encode("utf-8")
+
+
+def task_has_statement(
+    cookies: tuple[str, str], bearer: str, org: str, comp: str, task_id: str
+) -> bool:
+    try:
+        payload = load_task_view(cookies, bearer, org, comp, task_id)
+    except RuntimeError:
+        return False
+    task = payload["task"]
+    return bool(task.get("statement"))
 
 
 def decode_jwt_payload(token: str) -> dict[str, Any] | None:
@@ -719,6 +736,10 @@ def cmd_task(
 def load_task_file_categories(
     cookies: tuple[str, str], bearer: str, org: str, comp: str, task_id: str
 ) -> list[str]:
+    categories: list[str] = []
+    if task_has_statement(cookies, bearer, org, comp, task_id):
+        categories.append("statement")
+
     status, body, _ = api_request_text(
         path=f"/organization/{org}/competition/{comp}/task/{task_id}/contestantFiles",
         bearer=bearer,
@@ -726,16 +747,41 @@ def load_task_file_categories(
     if status == 200:
         parsed = body_json(body)
         if isinstance(parsed, list):
-            categories: list[str] = []
             for item in parsed:
                 if isinstance(item, str):
                     try:
-                        categories.append(normalize_task_file_category(item))
+                        category = normalize_task_file_category(item)
                     except ValueError:
-                        pass
+                        continue
+                    if category not in categories:
+                        categories.append(category)
             return categories
 
-    return list(DEFAULT_TASK_FILE_CATEGORIES)
+    status, body, _ = request_text(
+        path=f"/competitions/{org}/{comp}/{task_id}/view",
+        cookies=cookies,
+        timeout=30,
+    )
+    if status == 200:
+        for category, label in TASK_FILE_PAGE_LABELS.items():
+            if label in body and category not in categories:
+                categories.append(category)
+
+    return categories
+
+
+def get_task_data_options(
+    cookies: tuple[str, str], bearer: str, org: str, comp: str, task_id: str
+) -> list[dict[str, Any]]:
+    available = set(load_task_file_categories(cookies, bearer, org, comp, task_id))
+    return [
+        {
+            "category": category,
+            "label": label,
+            "available": category in available,
+        }
+        for category, label in TASK_FILE_CATEGORIES.items()
+    ]
 
 
 def download_task_file(
