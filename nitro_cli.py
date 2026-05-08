@@ -10,6 +10,8 @@ Usage:
     nitro-cli tasks <org>/<comp>
     nitro-cli task <org> <comp> <task_id>
     nitro-cli task <org>/<comp> <task_id>
+    nitro-cli download-data <org> <comp> <task_id> [--category CATEGORY ...] [--out-dir DIR] [--output FILE] [--force]
+    nitro-cli download-data <org>/<comp> <task_id> [--category CATEGORY ...] [--out-dir DIR] [--output FILE] [--force]
     nitro-cli submit <org> <comp> <task_id> --output FILE [--source FILE] [--note TEXT] [--wait]
     nitro-cli submissions <org> <comp> <task_id> [--author USER] [--page N] [--page-size N] [--mode MODE]
     nitro-cli submission <submission_id>
@@ -41,6 +43,13 @@ API_BASE_URL = os.environ.get("NITRO_API_BASE_URL", f"{BASE_URL}/api").rstrip("/
 UA = "Nitro CLI/0.1"
 DEFAULT_PAGE_SIZE = 20
 DEFAULT_SUBMISSION_PAGE_SIZE = 10
+TASK_FILE_CATEGORIES = {
+    "train_data": "Train data",
+    "test_data": "Test data",
+    "sample_output": "Sample output",
+    "custom_archive": "Custom archive",
+}
+DEFAULT_TASK_FILE_CATEGORIES = tuple(TASK_FILE_CATEGORIES)
 STATE_DIR = os.environ.get("NITRO_STATE_DIR", os.path.expanduser("~/.nitro-cli"))
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 HISTORY_FILE = os.path.join(STATE_DIR, "history")
@@ -64,6 +73,21 @@ def decode_session(session_cookie: str) -> dict[str, Any] | None:
         return None
 
 
+def encode_session(state: dict[str, Any]) -> str | None:
+    access_token = state.get("access_token") or state.get("accessToken") or ""
+    refresh_token = state.get("refresh_token") or state.get("refreshToken") or ""
+    if not access_token or not refresh_token:
+        return None
+    payload = {
+        "username": state.get("username") or "",
+        "role": state.get("role") or "user",
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
+    }
+    encoded = base64.b64encode(json.dumps(payload, separators=(",", ":")).encode())
+    return urllib.parse.quote(encoded.decode())
+
+
 def get_auth(state: dict[str, Any]) -> tuple[str | None, str | None, str] | None:
     cf = session = None
     access_token = state.get("access_token") or state.get("accessToken") or ""
@@ -76,6 +100,8 @@ def get_auth(state: dict[str, Any]) -> tuple[str | None, str | None, str] | None
         decoded = decode_session(session)
         if decoded:
             access_token = decoded.get("accessToken", "")
+    else:
+        session = encode_session(state)
     if not access_token:
         return None
     return cf, session, access_token
@@ -102,8 +128,14 @@ def request(
             url += f"?{query}"
 
     req_headers = {"User-Agent": UA}
-    if cookies and cookies[0] and cookies[1]:
-        req_headers["Cookie"] = f"cf_clearance={cookies[0]}; Cookie={cookies[1]}"
+    if cookies:
+        cookie_parts = []
+        if cookies[0]:
+            cookie_parts.append(f"cf_clearance={cookies[0]}")
+        if cookies[1]:
+            cookie_parts.append(f"Cookie={cookies[1]}")
+        if cookie_parts:
+            req_headers["Cookie"] = "; ".join(cookie_parts)
     if bearer:
         req_headers["Authorization"] = f"Bearer {bearer}"
     if headers:
@@ -121,6 +153,10 @@ def request(
         return e.code, body, dict(e.headers.items())
     except Exception as e:
         return 0, str(e).encode("utf-8", errors="replace"), {}
+
+
+def api_request_bytes(**kwargs: Any) -> tuple[int, bytes, dict[str, str]]:
+    return request(base_url=API_BASE_URL, **kwargs)
 
 
 def request_text(**kwargs: Any) -> tuple[int, str, dict[str, str]]:
@@ -257,6 +293,51 @@ def body_json(body: str) -> Any:
 def error_preview(body: str) -> str:
     preview = body.strip()
     return preview[:300] if preview else ""
+
+
+def normalize_task_file_category(category: str) -> str:
+    normalized = category.strip().lower().replace("-", "_")
+    if normalized not in TASK_FILE_CATEGORIES:
+        valid = ", ".join(TASK_FILE_CATEGORIES)
+        raise ValueError(f"invalid file category '{category}'; valid categories: {valid}")
+    return normalized
+
+
+def filename_from_content_disposition(value: str) -> str | None:
+    if not value:
+        return None
+    params: dict[str, str] = {}
+    for part in value.split(";")[1:]:
+        if "=" not in part:
+            continue
+        key, raw_value = part.split("=", 1)
+        params[key.strip().lower()] = raw_value.strip().strip('"')
+    filename = params.get("filename*") or params.get("filename")
+    if not filename:
+        return None
+    if "''" in filename:
+        _, filename = filename.split("''", 1)
+        filename = urllib.parse.unquote(filename)
+    filename = os.path.basename(filename.strip().strip('"'))
+    return filename or None
+
+
+def task_file_name(category: str, headers: dict[str, str]) -> str:
+    for key, value in headers.items():
+        if key.lower() == "content-disposition":
+            filename = filename_from_content_disposition(value)
+            if filename:
+                return filename
+    return category
+
+
+def response_is_html(body: bytes, headers: dict[str, str]) -> bool:
+    content_type = ""
+    for key, value in headers.items():
+        if key.lower() == "content-type":
+            content_type = value.lower()
+            break
+    return "text/html" in content_type or body.lstrip().lower().startswith(b"<!doctype html")
 
 
 def decode_jwt_payload(token: str) -> dict[str, Any] | None:
@@ -618,6 +699,162 @@ def cmd_task(
         print(f"Error: {e}")
         return 1
     print_task(task_id, payload["task"])
+    return 0
+
+
+def load_task_file_categories(
+    cookies: tuple[str, str], bearer: str, org: str, comp: str, task_id: str
+) -> list[str]:
+    status, body, _ = api_request_text(
+        path=f"/organization/{org}/competition/{comp}/task/{task_id}/contestantFiles",
+        bearer=bearer,
+    )
+    if status == 200:
+        parsed = body_json(body)
+        if isinstance(parsed, list):
+            categories: list[str] = []
+            for item in parsed:
+                if isinstance(item, str):
+                    try:
+                        categories.append(normalize_task_file_category(item))
+                    except ValueError:
+                        pass
+            return categories
+
+    return list(DEFAULT_TASK_FILE_CATEGORIES)
+
+
+def download_task_file(
+    cookies: tuple[str, str],
+    bearer: str,
+    org: str,
+    comp: str,
+    task_id: str,
+    category: str,
+) -> tuple[int, bytes, dict[str, str]]:
+    category = normalize_task_file_category(category)
+    status, body, headers = api_request_bytes(
+        path=f"/organization/{org}/competition/{comp}/task/{task_id}/file",
+        bearer=bearer,
+        params={"file_category": category},
+        timeout=180,
+    )
+    if status == 200 and not response_is_html(body, headers):
+        return status, body, headers
+
+    return request(
+        path=f"/competitions/{org}/{comp}/{task_id}/{category}/download",
+        cookies=cookies,
+        timeout=180,
+    )
+
+
+def write_task_file(
+    body: bytes,
+    headers: dict[str, str],
+    category: str,
+    output_path: str | None,
+    output_dir: str,
+    *,
+    force: bool = False,
+) -> str:
+    if output_path:
+        target = output_path
+    else:
+        target = os.path.join(output_dir, task_file_name(category, headers))
+
+    parent = os.path.dirname(os.path.abspath(target))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    if os.path.exists(target) and not force:
+        raise RuntimeError(f"Refusing to overwrite existing file: {target}")
+
+    with open(target, "wb") as f:
+        f.write(body)
+    return target
+
+
+def download_task_data(
+    cookies: tuple[str, str],
+    bearer: str,
+    org: str,
+    comp: str,
+    task_id: str,
+    *,
+    categories: list[str] | None = None,
+    output_dir: str = ".",
+    output_path: str | None = None,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    explicit_categories = categories is not None
+    normalized_categories = (
+        [normalize_task_file_category(category) for category in categories]
+        if categories
+        else load_task_file_categories(cookies, bearer, org, comp, task_id)
+    )
+    if output_path and len(normalized_categories) != 1:
+        raise RuntimeError("--output can only be used with exactly one --category")
+    if not normalized_categories:
+        raise RuntimeError("No downloadable task data files found")
+
+    results: list[dict[str, Any]] = []
+    for category in normalized_categories:
+        status, body, headers = download_task_file(
+            cookies, bearer, org, comp, task_id, category
+        )
+        if status != 200 or response_is_html(body, headers):
+            if not explicit_categories:
+                continue
+            preview = body.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Could not download {category}: HTTP {status}: {error_preview(preview)}"
+            )
+        path = write_task_file(
+            body,
+            headers,
+            category,
+            output_path,
+            output_dir,
+            force=force,
+        )
+        results.append({"category": category, "path": path, "bytes": len(body)})
+    if not results:
+        raise RuntimeError("No downloadable task data files found")
+    return results
+
+
+def cmd_download_data(
+    cookies: tuple[str, str],
+    bearer: str,
+    org: str,
+    comp: str,
+    task_id: str,
+    *,
+    categories: list[str] | None,
+    output_dir: str,
+    output_path: str | None,
+    force: bool,
+) -> int:
+    try:
+        results = download_task_data(
+            cookies,
+            bearer,
+            org,
+            comp,
+            task_id,
+            categories=categories,
+            output_dir=output_dir,
+            output_path=output_path,
+            force=force,
+        )
+    except (RuntimeError, ValueError, OSError) as e:
+        print(f"Error: {e}")
+        return 1
+
+    for result in results:
+        print(
+            f"Downloaded {result['category']} -> {result['path']} ({result['bytes']} bytes)"
+        )
     return 0
 
 
@@ -1140,6 +1377,7 @@ def shell_help() -> None:
   show
   submit <output.csv> [source.py] [--note TEXT] [--wait]
   task show
+  task download-data [--category CATEGORY ...] [--out-dir DIR] [--force]
   task submit <output.csv> [source.py] [--note TEXT] [--wait]
   submissions [--mode partial|complete|both]
   task submissions list [--mode partial|complete|both]
@@ -1205,6 +1443,7 @@ def setup_readline(ctx: dict[str, Any]) -> None:
             "select",
             "show",
             "submit",
+            "download-data",
             "submissions",
             "submission",
             "set-final",
@@ -1225,7 +1464,7 @@ def setup_readline(ctx: dict[str, Any]) -> None:
                 ],
             ]
         elif parts[:1] == ["task"]:
-            candidates = ["list", "select", "show", "submit", "submissions"]
+            candidates = ["list", "select", "show", "download-data", "submit", "submissions"]
         elif parts[:1] == ["select"]:
             candidates = (
                 [str(i) for i in range(1, len(tasks) + 1)]
@@ -1248,6 +1487,13 @@ def setup_readline(ctx: dict[str, Any]) -> None:
             ]
         elif parts[:2] == ["task", "submit"]:
             candidates = ["--note", "--wait"]
+        elif parts[:2] in (["task", "download-data"], ["download-data"]):
+            candidates = [
+                "--category",
+                "--out-dir",
+                "--force",
+                *DEFAULT_TASK_FILE_CATEGORIES,
+            ]
         elif parts[:3] == ["task", "submissions", "list"]:
             candidates = ["--mode", "partial", "complete", "both"]
         elif parts[:3] == ["task", "submissions", "show"]:
@@ -1658,6 +1904,40 @@ def run_shell() -> int:
             if parts[:2] == ["task", "show"]:
                 shell_show_task(ctx, cookies)
                 continue
+            if parts[0] == "download-data":
+                parts = ["task", "download-data", *parts[1:]]
+            if parts[:2] == ["task", "download-data"]:
+                contest = ctx.get("contest")
+                task = ctx.get("task")
+                if not contest or not task:
+                    print("Select a contest and task first.")
+                    continue
+                categories: list[str] = []
+                output_dir = "."
+                force = "--force" in parts[2:]
+                index = 2
+                while index < len(parts):
+                    if parts[index] == "--category" and index + 1 < len(parts):
+                        categories.append(parts[index + 1])
+                        index += 2
+                        continue
+                    if parts[index] == "--out-dir" and index + 1 < len(parts):
+                        output_dir = parts[index + 1]
+                        index += 2
+                        continue
+                    index += 1
+                cmd_download_data(
+                    cookies,
+                    bearer,
+                    contest.get("organizationSlug"),
+                    contest.get("competitionSlug"),
+                    str(task.get("id")),
+                    categories=categories or None,
+                    output_dir=output_dir,
+                    output_path=None,
+                    force=force,
+                )
+                continue
             if parts[0] == "submit" and len(parts) >= 2:
                 parts = ["task", "submit", *parts[1:]]
             if parts[:2] == ["task", "submit"] and len(parts) >= 3:
@@ -1769,6 +2049,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_task.add_argument("competition", nargs="+", help="<org>/<comp> or <org> <comp>")
     p_task.add_argument("task_id")
 
+    p_download = sub.add_parser("download-data", help="Download task data files")
+    p_download.add_argument(
+        "competition", nargs="+", help="<org>/<comp> or <org> <comp>"
+    )
+    p_download.add_argument("task_id")
+    p_download.add_argument(
+        "--category",
+        action="append",
+        choices=sorted(TASK_FILE_CATEGORIES),
+        help="Task file category to download; repeat for multiple categories",
+    )
+    p_download.add_argument("--out-dir", default=".")
+    p_download.add_argument("--output", help="Output file path for a single category")
+    p_download.add_argument("--force", action="store_true", help="Overwrite files")
+
     p_submit = sub.add_parser("submit", help="Create a submission")
     p_submit.add_argument("competition", nargs="+", help="<org>/<comp> or <org> <comp>")
     p_submit.add_argument("task_id")
@@ -1865,6 +2160,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Error: {e}")
             return 1
         return cmd_task(cookies, bearer, org, comp, str(args.task_id))
+
+    if args.cmd == "download-data":
+        try:
+            org, comp = parse_competition_ref(args.competition)
+        except ValueError as e:
+            print(f"Error: {e}")
+            return 1
+        return cmd_download_data(
+            cookies,
+            bearer,
+            org,
+            comp,
+            str(args.task_id),
+            categories=args.category,
+            output_dir=args.out_dir,
+            output_path=args.output,
+            force=args.force,
+        )
 
     if args.cmd == "submit":
         try:

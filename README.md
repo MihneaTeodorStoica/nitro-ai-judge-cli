@@ -8,6 +8,7 @@ CLI client for `judge.nitro-ai.org`.
 - list contests with page controls
 - list tasks for a contest
 - view full task statements
+- download task data files
 - submit solutions and wait for feedback
 - list submissions
 - inspect submission feedback/details
@@ -71,6 +72,8 @@ nitro-cli contests --page 2
 nitro-cli contests --all-pages
 nitro-cli tasks algolymp/algolymp-preojia-ix-x
 nitro-cli task algolymp/algolymp-preojia-ix-x 1
+nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --out-dir data
+nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --category test_data --output test_data.zip
 nitro-cli submissions algolymp/algolymp-preojia-ix-x 1 --mode both
 nitro-cli submission 3a009d767bd5 --org algolymp --comp algolymp-preojia-ix-x --task-id 1
 nitro-cli submit algolymp/algolymp-preojia-ix-x 1 --output submission.csv --source solution.py --wait
@@ -92,6 +95,7 @@ select 20
 tasks
 select 1
 show
+task download-data --out-dir data
 submit submission.csv solution.py --wait
 submissions
 submission 1
@@ -114,6 +118,7 @@ task list
 task select <index|id>
 select <index|id>
 show
+task download-data [--category CATEGORY ...] [--out-dir DIR] [--force]
 submit <output.csv> [source.py] [--note TEXT] [--wait]
 task show
 task submit <output.csv> [source.py] [--note TEXT] [--wait]
