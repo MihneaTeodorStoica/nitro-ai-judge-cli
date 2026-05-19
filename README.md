@@ -68,6 +68,7 @@ Direct commands:
 ```bash
 nitro-cli login
 nitro-cli contests
+nitro-cli --api-url http://127.0.0.1:8080 contests
 nitro-cli contests --page 2
 nitro-cli contests --all-pages
 nitro-cli tasks algolymp/algolymp-preojia-ix-x
@@ -80,10 +81,27 @@ nitro-cli submission 3a009d767bd5 --org algolymp --comp algolymp-preojia-ix-x --
 nitro-cli submit algolymp/algolymp-preojia-ix-x 1 --output submission.csv --source solution.py --wait
 ```
 
+Custom backend:
+
+```bash
+NITRO_API_BASE_URL=http://127.0.0.1:8080 nitro-cli tasks algolymp/algolymp-preojia-ix-x
+nitro-cli --api-url http://127.0.0.1:8080 tasks algolymp/algolymp-preojia-ix-x
+```
+
+Contestant Cloud submission proxy:
+
+```bash
+nitro-cli --api-url http://127.0.0.1:8080 --submission-proxy tasks algolymp/algolymp-preojia-ix-x
+nitro-cli --api-url http://127.0.0.1:8080 --submission-proxy submit algolymp/algolymp-preojia-ix-x 1 --output submission.csv --source solution.py
+```
+
+`--submission-proxy` sends notebook file paths to the proxy so the Jupyter server can fetch, prejudge, and forward the files.
+
 Interactive shell:
 
 ```bash
 nitro-cli
+nitro-cli --api-url http://127.0.0.1:8080 --submission-proxy
 ```
 
 Example shell session:

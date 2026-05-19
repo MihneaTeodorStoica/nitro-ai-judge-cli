@@ -4,6 +4,7 @@ Nitro AI Judge CLI.
 
 Usage:
     nitro-cli
+    nitro-cli [--api-url URL] [--submission-proxy] <command>
     nitro-cli login [--username USER --password PASS]
     nitro-cli contests [--page N] [--page-size N] [--all-pages] [--all]
     nitro-cli tasks <org> <comp>
@@ -40,6 +41,10 @@ from typing import Any
 
 BASE_URL = "https://judge.nitro-ai.org"
 API_BASE_URL = os.environ.get("NITRO_API_BASE_URL", f"{BASE_URL}/api").rstrip("/")
+SUBMISSION_PROXY_MODE = (
+    os.environ.get("NITRO_SUBMISSION_PROXY", "").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
 UA = "Nitro CLI/0.1"
 DEFAULT_PAGE_SIZE = 20
 DEFAULT_SUBMISSION_PAGE_SIZE = 10
@@ -175,6 +180,14 @@ def api_request_text(**kwargs: Any) -> tuple[int, str, dict[str, str]]:
     return request_text(base_url=API_BASE_URL, **kwargs)
 
 
+def configure_runtime(api_url: str | None, submission_proxy: bool) -> None:
+    global API_BASE_URL, SUBMISSION_PROXY_MODE
+    if api_url:
+        API_BASE_URL = api_url.rstrip("/")
+    if submission_proxy:
+        SUBMISSION_PROXY_MODE = True
+
+
 def parse_singlefetch(body: str) -> dict[str, Any] | list[Any] | None:
     try:
         raw = json.loads(body)
@@ -295,6 +308,36 @@ def body_json(body: str) -> Any:
         return json.loads(body)
     except json.JSONDecodeError:
         return None
+
+
+def list_payload(data: Any, *keys: str) -> list[Any] | None:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return None
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        nested = list_payload(value, *keys)
+        if nested is not None:
+            return nested
+    return None
+
+
+def int_payload(data: Any, *keys: str, default: int = 1) -> int:
+    if not isinstance(data, dict):
+        return default
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    nested = data.get("data")
+    if isinstance(nested, dict):
+        return int_payload(nested, *keys, default=default)
+    return default
 
 
 def error_preview(body: str) -> str:
@@ -524,12 +567,32 @@ def cmd_login(username: str | None, password: str | None) -> int:
 
 def load_competitions_page(
     cookies: tuple[str, str],
+    bearer: str,
     *,
     page: int,
     page_size: int,
     featured: bool | None,
 ) -> tuple[list[dict[str, Any]], int]:
     featured_value = None if featured is None else ("true" if featured else "false")
+    status, body, _ = api_request_text(
+        path="/competitions",
+        bearer=bearer,
+        params={"page": page, "page_size": page_size, "featured": featured_value},
+    )
+    if status == 200:
+        data = body_json(body)
+        competitions = list_payload(data, "competitions", "items", "data")
+        if competitions is not None:
+            last_page = int_payload(
+                data,
+                "lastPage",
+                "last_page",
+                "totalPages",
+                "total_pages",
+                default=1,
+            )
+            return competitions, last_page
+
     status, body, _ = request_text(
         path="/competitions.data",
         cookies=cookies,
@@ -555,6 +618,7 @@ def load_competitions_page(
 
 def load_competitions(
     cookies: tuple[str, str],
+    bearer: str,
     *,
     page: int | None,
     page_size: int,
@@ -563,17 +627,17 @@ def load_competitions(
 ) -> list[dict[str, Any]]:
     if page is not None and not all_pages:
         competitions, _ = load_competitions_page(
-            cookies, page=page, page_size=page_size, featured=featured
+            cookies, bearer, page=page, page_size=page_size, featured=featured
         )
         return competitions
 
     competitions, last_page = load_competitions_page(
-        cookies, page=1, page_size=page_size, featured=featured
+        cookies, bearer, page=1, page_size=page_size, featured=featured
     )
     all_competitions = list(competitions)
     for next_page in range(2, last_page + 1):
         page_items, _ = load_competitions_page(
-            cookies, page=next_page, page_size=page_size, featured=featured
+            cookies, bearer, page=next_page, page_size=page_size, featured=featured
         )
         all_competitions.extend(page_items)
     return all_competitions
@@ -596,6 +660,7 @@ def print_competitions(competitions: list[dict[str, Any]]) -> None:
 
 def cmd_contests(
     cookies: tuple[str, str],
+    bearer: str,
     page: int | None,
     page_size: int,
     featured: bool | None,
@@ -604,6 +669,7 @@ def cmd_contests(
     try:
         competitions = load_competitions(
             cookies,
+            bearer,
             page=page,
             page_size=page_size,
             featured=featured,
@@ -625,8 +691,16 @@ def load_tasks(
     )
     if status == 200:
         data = body_json(body)
-        if isinstance(data, list):
-            return data
+        tasks = list_payload(data, "tasks", "items", "data")
+        if tasks is not None:
+            return tasks
+
+    status, body, _ = api_request_text(path="/tasks", bearer=bearer)
+    if status == 200:
+        data = body_json(body)
+        tasks = list_payload(data, "tasks", "items", "data")
+        if tasks is not None:
+            return tasks
 
     status, body, _ = request_text(
         path=f"/competitions/{org}/{comp}.data",
@@ -958,6 +1032,29 @@ def create_submission(
     note: str,
 ) -> dict[str, Any]:
     note = note.strip() or "nitro-cli"
+    if SUBMISSION_PROXY_MODE:
+        if not source_path:
+            raise RuntimeError("--source is required when using the submission proxy")
+        payload = {
+            "outputPath": output_path,
+            "sourceCodePath": source_path,
+            "note": note,
+        }
+        status, body, _ = api_request_text(
+            path=f"/task/{task_id}/submit",
+            bearer=bearer,
+            method="POST",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            timeout=120,
+        )
+        if status not in {200, 201}:
+            raise RuntimeError(f"HTTP {status}: {error_preview(body)}")
+        parsed = body_json(body)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("Could not parse submission response")
+        return parsed
+
     with open(output_path, "rb") as f:
         output_bytes = f.read()
 
@@ -1669,6 +1766,7 @@ def shell_select_task(token: str, ctx: dict[str, Any]) -> tuple[bool, str]:
 def shell_list_contests(
     ctx: dict[str, Any],
     cookies: tuple[str, str],
+    bearer: str,
     all_contests: bool,
     *,
     all_pages: bool = False,
@@ -1677,6 +1775,7 @@ def shell_list_contests(
 ) -> None:
     contests = load_competitions(
         cookies,
+        bearer,
         page=page,
         page_size=page_size,
         featured=None if all_contests else True,
@@ -1911,7 +2010,7 @@ def run_shell() -> int:
                         )
                 continue
             if parts[0] == "contests":
-                shell_list_contests(ctx, cookies, False, page=1)
+                shell_list_contests(ctx, cookies, ctx["bearer"], False, page=1)
                 continue
             if parts[:2] == ["contest", "list"]:
                 page = 1
@@ -1928,6 +2027,7 @@ def run_shell() -> int:
                 shell_list_contests(
                     ctx,
                     cookies,
+                    ctx["bearer"],
                     "--all" in parts[2:],
                     all_pages=all_pages,
                     page=page,
@@ -1936,7 +2036,7 @@ def run_shell() -> int:
                 continue
             if parts[:2] == ["contest", "select"] and len(parts) >= 3:
                 if not ctx.get("contests"):
-                    shell_list_contests(ctx, cookies, False, page=1)
+                    shell_list_contests(ctx, cookies, ctx["bearer"], False, page=1)
                 ok, message = shell_select_contest(parts[2], ctx, cookies)
                 print(message)
                 continue
@@ -1945,7 +2045,7 @@ def run_shell() -> int:
                     ok, message = shell_select_task(parts[1], ctx)
                 else:
                     if not ctx.get("contests"):
-                        shell_list_contests(ctx, cookies, False, page=1)
+                        shell_list_contests(ctx, cookies, ctx["bearer"], False, page=1)
                     ok, message = shell_select_contest(parts[1], ctx, cookies)
                 print(message)
                 continue
@@ -2092,6 +2192,16 @@ def run_shell() -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Nitro AI Judge CLI")
+    parser.add_argument(
+        "--api-url",
+        help="Backend API base URL (default: NITRO_API_BASE_URL or judge.nitro-ai.org/api)",
+    )
+    parser.add_argument(
+        "--submission-proxy",
+        action="store_true",
+        default=SUBMISSION_PROXY_MODE,
+        help="Submit through the Contestant Cloud submission proxy",
+    )
     sub = parser.add_subparsers(dest="cmd")
 
     p_login = sub.add_parser("login", help="Login to Nitro Judge")
@@ -2183,13 +2293,10 @@ def require_auth() -> tuple[dict[str, Any], tuple[str, str], str] | None:
 def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     parser = build_parser()
-    if not argv:
-        return run_shell()
-
     args = parser.parse_args(argv)
+    configure_runtime(args.api_url, args.submission_proxy)
     if not args.cmd:
-        parser.print_help()
-        return 1
+        return run_shell()
 
     if args.cmd == "login":
         return cmd_login(args.username, args.password)
@@ -2203,6 +2310,7 @@ def main(argv: list[str] | None = None) -> int:
         featured = None if args.all else True
         return cmd_contests(
             cookies,
+            bearer,
             args.page,
             args.page_size,
             featured,
