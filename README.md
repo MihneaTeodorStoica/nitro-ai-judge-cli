@@ -9,6 +9,7 @@ CLI client for `judge.nitro-ai.org`.
 - list tasks for a contest
 - view full task statements
 - download task data files
+- launch a past contest locally with Docker
 - submit solutions and wait for feedback
 - list submissions
 - inspect submission feedback/details
@@ -76,6 +77,10 @@ nitro-cli task algolymp/algolymp-preojia-ix-x 1
 nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --out-dir data
 nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --category statement --output TASK.md
 nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --category test_data --output test_data.zip
+nitro-cli play algolymp/algolymp-preojia-ix-x
+nitro-cli play algolymp/algolymp-preojia-ix-x --gpu --port 8890
+nitro-cli play logs algolymp/algolymp-preojia-ix-x
+nitro-cli play down algolymp/algolymp-preojia-ix-x
 nitro-cli submissions algolymp/algolymp-preojia-ix-x 1 --mode both
 nitro-cli submission 3a009d767bd5 --org algolymp --comp algolymp-preojia-ix-x --task-id 1
 nitro-cli submit algolymp/algolymp-preojia-ix-x 1 --output submission.csv --source solution.py --wait
@@ -96,6 +101,16 @@ nitro-cli --api-url http://127.0.0.1:8080 --submission-proxy submit algolymp/alg
 ```
 
 `--submission-proxy` sends notebook file paths to the proxy so the Jupyter server can fetch, prejudge, and forward the files.
+
+Past-contest play:
+
+```bash
+nitro-cli play algolymp/algolymp-preojia-ix-x
+nitro-cli play down algolymp/algolymp-preojia-ix-x
+nitro-cli play logs algolymp/algolymp-preojia-ix-x
+```
+
+`play` requires Docker and `docker compose`. It stores generated Compose files under `~/.nitro-cli/contestant-cloud/<org>-<comp>/`, creates the external `nitro_net` Docker network, and starts the contest notebook plus submission proxy.
 
 Interactive shell:
 
