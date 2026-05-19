@@ -13,6 +13,10 @@ Usage:
     nitro-cli task <org>/<comp> <task_id>
     nitro-cli download-data <org> <comp> <task_id> [--category CATEGORY ...] [--out-dir DIR] [--output FILE] [--force]
     nitro-cli download-data <org>/<comp> <task_id> [--category CATEGORY ...] [--out-dir DIR] [--output FILE] [--force]
+    nitro-cli play <org> <comp> [--gpu] [--port PORT]
+    nitro-cli play <org>/<comp> [--gpu] [--port PORT]
+    nitro-cli play logs <org>/<comp>
+    nitro-cli play down <org>/<comp>
     nitro-cli submit <org> <comp> <task_id> --output FILE [--source FILE] [--note TEXT] [--wait]
     nitro-cli submissions <org> <comp> <task_id> [--author USER] [--page N] [--page-size N] [--mode MODE]
     nitro-cli submission <submission_id>
@@ -27,10 +31,13 @@ import argparse
 import base64
 import getpass
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 import readline
 import shlex
+import socket
+import subprocess
 import sys
 import time
 import urllib.error as urllib_error
@@ -62,9 +69,34 @@ TASK_FILE_PAGE_LABELS = {
     "sample_output": "Sample Output",
     "custom_archive": "Custom Archive",
 }
+
+
+class TaskFileLinkParser(HTMLParser):
+    def __init__(self, org: str, comp: str, task_id: str) -> None:
+        super().__init__()
+        self.org = org
+        self.comp = comp
+        self.task_id = str(task_id)
+        self.links: dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "a":
+            return
+        href = dict(attrs).get("href")
+        if not href:
+            return
+        category = task_file_category_from_href(self.org, self.comp, self.task_id, href)
+        if category and category not in self.links:
+            self.links[category] = href
+
+
 STATE_DIR = os.environ.get("NITRO_STATE_DIR", os.path.expanduser("~/.nitro-cli"))
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 HISTORY_FILE = os.path.join(STATE_DIR, "history")
+PLAY_STATE_DIR = os.path.join(STATE_DIR, "contestant-cloud")
+PLAY_NETWORK = "nitro_net"
+PLAY_DEFAULT_PORT = 8888
+PLAY_PROXY_PORT = 9000
 
 
 def ensure_state_dir() -> None:
@@ -269,6 +301,232 @@ def parse_competition_ref(parts: list[str]) -> tuple[str, str]:
     raise ValueError("competition must be <org>/<comp> or <org> <comp>")
 
 
+def play_slug(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in value)
+
+
+def play_workdir(org: str, comp: str) -> str:
+    return os.path.join(PLAY_STATE_DIR, f"{play_slug(org)}-{play_slug(comp)}")
+
+
+def play_project_name(org: str, comp: str) -> str:
+    return f"nitro-{play_slug(org)}-{play_slug(comp)}"
+
+
+def run_process(
+    cmd: list[str], *, cwd: str | None = None, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError("Docker is not installed or not on PATH") from e
+    if check and result.returncode != 0:
+        output = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(output or f"{cmd[0]} exited with {result.returncode}")
+    return result
+
+
+def ensure_docker_ready() -> None:
+    run_process(["docker", "--version"])
+    run_process(["docker", "compose", "version"])
+    run_process(["docker", "info"])
+
+
+def ensure_play_network() -> None:
+    inspect = run_process(["docker", "network", "inspect", PLAY_NETWORK], check=False)
+    if inspect.returncode != 0:
+        run_process(["docker", "network", "create", PLAY_NETWORK])
+
+
+def remove_play_network_if_unused() -> None:
+    result = run_process(["docker", "network", "rm", PLAY_NETWORK], check=False)
+    if result.returncode == 0:
+        return
+    output = f"{result.stderr}\n{result.stdout}"
+    ignored = ("No such network", "has active endpoints", "active endpoints", "in use")
+    if not any(text in output for text in ignored):
+        raise RuntimeError(output.strip() or f"Could not remove {PLAY_NETWORK}")
+
+
+def play_compose_base_cmd(org: str, comp: str) -> list[str]:
+    workdir = play_workdir(org, comp)
+    return [
+        "docker",
+        "compose",
+        "--project-name",
+        play_project_name(org, comp),
+        "--file",
+        os.path.join(workdir, "docker-compose.yml"),
+    ]
+
+
+def play_jupyter_running(org: str, comp: str) -> bool:
+    compose_file = os.path.join(play_workdir(org, comp), "docker-compose.yml")
+    if not os.path.exists(compose_file):
+        return False
+    result = run_process(
+        [*play_compose_base_cmd(org, comp), "ps", "--status", "running", "--services"],
+        cwd=play_workdir(org, comp),
+        check=False,
+    )
+    return result.returncode == 0 and "jupyter-server" in result.stdout.splitlines()
+
+
+def ensure_port_free(port: int) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.3)
+        if sock.connect_ex(("127.0.0.1", port)) == 0:
+            raise RuntimeError(
+                f"Host port {port} is already in use; rerun with --port N"
+            )
+
+
+def write_play_files(org: str, comp: str, port: int, gpu: bool) -> str:
+    workdir = play_workdir(org, comp)
+    secrets_dir = os.path.join(workdir, "secrets")
+    os.makedirs(secrets_dir, exist_ok=True)
+    secret_path = os.path.join(secrets_dir, "session_whitelist_bypass_key")
+    if not os.path.exists(secret_path):
+        open(secret_path, "a", encoding="utf-8").close()
+
+    env = "\n".join(
+        [
+            "JUDGE_BASE_URL=https://judge.nitro-ai.org/api",
+            f"ORGANIZATION_SLUG={org}",
+            f"COMPETITION_SLUG={comp}",
+            f"JUPYTER_PORT={port}",
+            f"PROXY_PORT={PLAY_PROXY_PORT}",
+            "JUPYTER_BASE_URL=http://jupyter-server:8888/",
+            "SESSION_WHITELIST_BYPASS_KEY_FILE=/run/secrets/session_whitelist_bypass_key",
+            "PROXY_DISABLE_CACHE=1",
+            "PROXY_PREJUDGING_TIMEOUT_S=120",
+            "",
+        ]
+    )
+    with open(os.path.join(workdir, ".env"), "w", encoding="utf-8") as f:
+        f.write(env)
+
+    gpu_block = ""
+    if gpu:
+        gpu_block = """    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+"""
+    compose = f"""services:
+  jupyter-server:
+    image: nitroai/{org}-{comp}-notebook:latest
+    ports:
+      - "${{JUPYTER_PORT:-8888}}:8888"
+    networks:
+      - {PLAY_NETWORK}
+    depends_on:
+      - submission-proxy
+{gpu_block}  submission-proxy:
+    image: nitroai/{org}-{comp}-judge-proxy:latest
+    ports:
+      - "${{PROXY_PORT:-9000}}:9000"
+    environment:
+      JUDGE_BASE_URL: "${{JUDGE_BASE_URL}}"
+      ORGANIZATION_SLUG: "${{ORGANIZATION_SLUG}}"
+      COMPETITION_SLUG: "${{COMPETITION_SLUG}}"
+      PROXY_PORT: "${{PROXY_PORT:-9000}}"
+      JUPYTER_BASE_URL: "http://jupyter-server:8888/"
+      SESSION_WHITELIST_BYPASS_KEY_FILE: "/run/secrets/session_whitelist_bypass_key"
+      PROXY_DISABLE_CACHE: "1"
+      PROXY_PREJUDGING_TIMEOUT_S: "120"
+    secrets:
+      - session_whitelist_bypass_key
+    networks:
+      - {PLAY_NETWORK}
+
+networks:
+  {PLAY_NETWORK}:
+    external: true
+
+secrets:
+  session_whitelist_bypass_key:
+    file: ./secrets/session_whitelist_bypass_key
+"""
+    with open(os.path.join(workdir, "docker-compose.yml"), "w", encoding="utf-8") as f:
+        f.write(compose)
+    return workdir
+
+
+def cmd_play_up(org: str, comp: str, *, gpu: bool, port: int) -> int:
+    ensure_docker_ready()
+    workdir = write_play_files(org, comp, port, gpu)
+    if not play_jupyter_running(org, comp):
+        ensure_port_free(port)
+    ensure_play_network()
+    base_cmd = play_compose_base_cmd(org, comp)
+    run_process([*base_cmd, "pull"], cwd=workdir)
+    run_process([*base_cmd, "up", "-d"], cwd=workdir)
+    print(f"Started {org}/{comp}")
+    print(f"Jupyter: http://localhost:{port}")
+    print(f"State: {workdir}")
+    return 0
+
+
+def cmd_play_down(org: str, comp: str) -> int:
+    ensure_docker_ready()
+    workdir = play_workdir(org, comp)
+    if not os.path.exists(os.path.join(workdir, "docker-compose.yml")):
+        print(f"No play environment found: {workdir}")
+        return 0
+    run_process([*play_compose_base_cmd(org, comp), "down"], cwd=workdir)
+    remove_play_network_if_unused()
+    print(f"Stopped {org}/{comp}")
+    return 0
+
+
+def cmd_play_logs(org: str, comp: str) -> int:
+    ensure_docker_ready()
+    workdir = play_workdir(org, comp)
+    if not os.path.exists(os.path.join(workdir, "docker-compose.yml")):
+        print(f"No play environment found: {workdir}")
+        return 1
+    try:
+        result = subprocess.run(
+            [*play_compose_base_cmd(org, comp), "logs", "-f"],
+            cwd=workdir,
+        )
+    except FileNotFoundError:
+        print("Error: Docker is not installed or not on PATH")
+        return 1
+    return result.returncode
+
+
+def cmd_play(args: argparse.Namespace) -> int:
+    parts = list(args.play_args)
+    if not parts:
+        print("Error: play requires <org>/<comp> or down/logs <org>/<comp>")
+        return 1
+    action = "up"
+    if parts[0] in {"down", "logs"}:
+        action = parts.pop(0)
+    try:
+        org, comp = parse_competition_ref(parts)
+        if action == "down":
+            return cmd_play_down(org, comp)
+        if action == "logs":
+            return cmd_play_logs(org, comp)
+        return cmd_play_up(org, comp, gpu=args.gpu, port=args.port)
+    except (RuntimeError, ValueError) as e:
+        print(f"Error: {e}")
+        return 1
+
+
 def format_datetime_ms(value: Any) -> str:
     if not isinstance(value, (int, float)):
         return str(value)
@@ -372,15 +630,85 @@ def filename_from_content_disposition(value: str) -> str | None:
     return filename or None
 
 
-def task_file_name(category: str, headers: dict[str, str]) -> str:
+def task_file_category_from_href(
+    org: str, comp: str, task_id: str, href: str
+) -> str | None:
+    path = urllib.parse.urlparse(href).path
+    parts = [part for part in path.split("/") if part]
+    expected = ["competitions", org, comp, str(task_id)]
+    if len(parts) != 6 or parts[:4] != expected or parts[5] != "download":
+        return None
+    try:
+        return normalize_task_file_category(parts[4])
+    except ValueError:
+        return None
+
+
+def request_path_from_href(href: str) -> str:
+    parsed = urllib.parse.urlparse(href)
+    path = parsed.path
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return path
+
+
+def generic_task_filename(filename: str) -> bool:
+    stem, _ = os.path.splitext(os.path.basename(filename))
+    return stem.lower() in {"file", "download"}
+
+
+def task_file_content_type(headers: dict[str, str]) -> str:
+    for key, value in headers.items():
+        if key.lower() == "content-type":
+            return value.lower()
+    return ""
+
+
+def task_file_extension(
+    category: str, headers: dict[str, str], body: bytes | None = None
+) -> str:
+    filename = ""
+    for key, value in headers.items():
+        if key.lower() == "content-disposition":
+            filename = filename_from_content_disposition(value) or ""
+            break
+    _, extension = os.path.splitext(filename)
+
+    if body:
+        stripped = body.lstrip()
+        if stripped.startswith(b"PK\x03\x04"):
+            return ".zip"
+        if stripped.startswith(b"{"):
+            try:
+                parsed = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                parsed = None
+            if (
+                isinstance(parsed, dict)
+                and isinstance(parsed.get("cells"), list)
+                and isinstance(parsed.get("metadata"), dict)
+            ):
+                return ".ipynb"
+
+    content_type = task_file_content_type(headers)
+    if "text/csv" in content_type:
+        return ".csv"
+    if extension:
+        return extension
+    return ""
+
+
+def task_file_name(
+    category: str, headers: dict[str, str], body: bytes | None = None
+) -> str:
     if category == "statement":
         return "TASK.md"
     for key, value in headers.items():
         if key.lower() == "content-disposition":
             filename = filename_from_content_disposition(value)
-            if filename:
+            if filename and not generic_task_filename(filename):
                 return filename
-    return category
+    return f"{category}{task_file_extension(category, headers, body)}"
 
 
 def response_is_html(body: bytes, headers: dict[str, str]) -> bool:
@@ -814,6 +1142,12 @@ def load_task_file_categories(
     if task_has_statement(cookies, bearer, org, comp, task_id):
         categories.append("statement")
 
+    for category in load_task_file_links(cookies, org, comp, task_id):
+        if category not in categories:
+            categories.append(category)
+    if len(categories) > (1 if "statement" in categories else 0):
+        return categories
+
     status, body, _ = api_request_text(
         path=f"/organization/{org}/competition/{comp}/task/{task_id}/contestantFiles",
         bearer=bearer,
@@ -844,6 +1178,21 @@ def load_task_file_categories(
     return categories
 
 
+def load_task_file_links(
+    cookies: tuple[str, str], org: str, comp: str, task_id: str
+) -> dict[str, str]:
+    status, body, _ = request_text(
+        path=f"/competitions/{org}/{comp}/{task_id}/view",
+        cookies=cookies,
+        timeout=30,
+    )
+    if status != 200:
+        return {}
+    parser = TaskFileLinkParser(org, comp, task_id)
+    parser.feed(body)
+    return parser.links
+
+
 def get_task_data_options(
     cookies: tuple[str, str], bearer: str, org: str, comp: str, task_id: str
 ) -> list[dict[str, Any]]:
@@ -865,8 +1214,13 @@ def download_task_file(
     comp: str,
     task_id: str,
     category: str,
+    links: dict[str, str] | None = None,
 ) -> tuple[int, bytes, dict[str, str]]:
     category = normalize_task_file_category(category)
+    link = (links or {}).get(category)
+    if link:
+        return request(path=request_path_from_href(link), cookies=cookies, timeout=180)
+
     status, body, headers = api_request_bytes(
         path=f"/organization/{org}/competition/{comp}/task/{task_id}/file",
         bearer=bearer,
@@ -895,7 +1249,7 @@ def write_task_file(
     if output_path:
         target = output_path
     else:
-        target = os.path.join(output_dir, task_file_name(category, headers))
+        target = os.path.join(output_dir, task_file_name(category, headers, body))
 
     parent = os.path.dirname(os.path.abspath(target))
     if parent:
@@ -931,6 +1285,7 @@ def download_task_data(
     if not normalized_categories:
         raise RuntimeError("No downloadable task data files found")
 
+    task_file_links = load_task_file_links(cookies, org, comp, task_id)
     results: list[dict[str, Any]] = []
     for category in normalized_categories:
         if category == "statement":
@@ -938,7 +1293,7 @@ def download_task_data(
             headers: dict[str, str] = {}
         else:
             status, body, headers = download_task_file(
-                cookies, bearer, org, comp, task_id, category
+                cookies, bearer, org, comp, task_id, category, task_file_links
             )
             if status != 200 or response_is_html(body, headers):
                 if not explicit_categories:
@@ -2238,6 +2593,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_download.add_argument("--output", help="Output file path for a single category")
     p_download.add_argument("--force", action="store_true", help="Overwrite files")
 
+    p_play = sub.add_parser("play", help="Launch a past contest locally with Docker")
+    p_play.add_argument("play_args", nargs="*")
+    p_play.add_argument("--gpu", action="store_true", help="Request NVIDIA GPU access")
+    p_play.add_argument("--port", type=int, default=PLAY_DEFAULT_PORT)
+
     p_submit = sub.add_parser("submit", help="Create a submission")
     p_submit.add_argument("competition", nargs="+", help="<org>/<comp> or <org> <comp>")
     p_submit.add_argument("task_id")
@@ -2300,6 +2660,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "login":
         return cmd_login(args.username, args.password)
+
+    if args.cmd == "play":
+        return cmd_play(args)
 
     auth_data = require_auth()
     if not auth_data:
