@@ -428,6 +428,11 @@ def write_play_files(org: str, comp: str, port: int, gpu: bool) -> str:
     image: nitroai/{org}-{comp}-notebook:latest
     ports:
       - "${{JUPYTER_PORT:-8888}}:8888"
+    environment:
+      PROXY_URL: "http://submission-proxy:${{PROXY_PORT:-9000}}"
+      PROXY_URL_CLIENT: "http://localhost:${{PROXY_PORT:-9000}}"
+    cap_add:
+      - NET_ADMIN
     networks:
       - {PLAY_NETWORK}
     depends_on:
