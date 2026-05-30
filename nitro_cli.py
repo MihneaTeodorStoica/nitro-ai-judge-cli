@@ -42,6 +42,7 @@ import sys
 import time
 import urllib.error as urllib_error
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request as urllib_request
 import uuid
 from typing import Any
@@ -610,6 +611,14 @@ def error_preview(body: str) -> str:
 
 def normalize_task_file_category(category: str) -> str:
     normalized = category.strip().lower().replace("-", "_")
+    aliases = {
+        "pre_judging": "pre_judging_script",
+        "prejudging": "pre_judging_script",
+        "prejudging_script": "pre_judging_script",
+        "pre_judge": "pre_judging_script",
+        "pre_judge_script": "pre_judging_script",
+    }
+    normalized = aliases.get(normalized, normalized)
     if normalized not in TASK_FILE_CATEGORIES:
         valid = ", ".join(TASK_FILE_CATEGORIES)
         raise ValueError(f"invalid file category '{category}'; valid categories: {valid}")
@@ -659,7 +668,7 @@ def request_path_from_href(href: str) -> str:
 
 def generic_task_filename(filename: str) -> bool:
     stem, _ = os.path.splitext(os.path.basename(filename))
-    return stem.lower() in {"file", "download"}
+    return stem.lower() in {"file", "download", "pre_judging_script"}
 
 
 def task_file_content_type(headers: dict[str, str]) -> str:
@@ -694,6 +703,9 @@ def task_file_extension(
                 and isinstance(parsed.get("metadata"), dict)
             ):
                 return ".ipynb"
+
+    if category == "pre_judging_script":
+        return ".py"
 
     content_type = task_file_content_type(headers)
     if "text/csv" in content_type:
@@ -968,11 +980,30 @@ def load_competitions(
         cookies, bearer, page=1, page_size=page_size, featured=featured
     )
     all_competitions = list(competitions)
+    if last_page <= 1:
+        return all_competitions
+
+    page_results: dict[int, list[dict[str, Any]]] = {}
+    max_workers = min(COMPETITION_PAGE_WORKERS, last_page - 1)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                load_competitions_page,
+                cookies,
+                bearer,
+                page=next_page,
+                page_size=page_size,
+                featured=featured,
+            ): next_page
+            for next_page in range(2, last_page + 1)
+        }
+        for future in as_completed(futures):
+            next_page = futures[future]
+            page_items, _ = future.result()
+            page_results[next_page] = page_items
+
     for next_page in range(2, last_page + 1):
-        page_items, _ = load_competitions_page(
-            cookies, bearer, page=next_page, page_size=page_size, featured=featured
-        )
-        all_competitions.extend(page_items)
+        all_competitions.extend(page_results.get(next_page, []))
     return all_competitions
 
 
