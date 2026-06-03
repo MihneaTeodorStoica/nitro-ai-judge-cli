@@ -93,14 +93,17 @@ NITRO_API_BASE_URL=http://127.0.0.1:8080 nitro-cli tasks algolymp/algolymp-preoj
 nitro-cli --api-url http://127.0.0.1:8080 tasks algolymp/algolymp-preojia-ix-x
 ```
 
+API URL precedence is `--api-url`, then `NITRO_API_BASE_URL`, then `PROXY_URL`, then Nitro's hosted API.
+
 Contestant Cloud submission proxy:
 
 ```bash
-nitro-cli --api-url http://127.0.0.1:8080 --submission-proxy tasks algolymp/algolymp-preojia-ix-x
+PROXY_URL=http://127.0.0.1:8080 nitro-cli tasks algolymp/algolymp-preojia-ix-x
+PROXY_URL=http://127.0.0.1:8080 nitro-cli submit algolymp/algolymp-preojia-ix-x 1 --output submission.csv --source solution.py
 nitro-cli --api-url http://127.0.0.1:8080 --submission-proxy submit algolymp/algolymp-preojia-ix-x 1 --output submission.csv --source solution.py
 ```
 
-`--submission-proxy` sends notebook file paths to the proxy so the Jupyter server can fetch, prejudge, and forward the files.
+When `PROXY_URL` is set and neither `--api-url` nor `NITRO_API_BASE_URL` is set, `nitro-cli` uses it as the API URL and enables submission proxy mode automatically. `--submission-proxy` still forces proxy submission mode for an explicit `--api-url`.
 
 Past-contest play:
 
@@ -116,7 +119,7 @@ Interactive shell:
 
 ```bash
 nitro-cli
-nitro-cli --api-url http://127.0.0.1:8080 --submission-proxy
+PROXY_URL=http://127.0.0.1:8080 nitro-cli
 ```
 
 Example shell session:

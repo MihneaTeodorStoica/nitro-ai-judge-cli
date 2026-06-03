@@ -48,11 +48,44 @@ import uuid
 from typing import Any
 
 BASE_URL = "https://judge.nitro-ai.org"
-API_BASE_URL = os.environ.get("NITRO_API_BASE_URL", f"{BASE_URL}/api").rstrip("/")
-SUBMISSION_PROXY_MODE = (
-    os.environ.get("NITRO_SUBMISSION_PROXY", "").strip().lower()
-    in {"1", "true", "yes", "on"}
-)
+DEFAULT_API_BASE_URL = f"{BASE_URL}/api"
+TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+
+
+def clean_env_value(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def clean_api_url(value: str) -> str:
+    return value.strip().rstrip("/")
+
+
+def env_flag(name: str) -> bool:
+    value = clean_env_value(name)
+    return value is not None and value.lower() in TRUE_ENV_VALUES
+
+
+def resolve_api_base_url(api_url: str | None = None) -> tuple[str, bool]:
+    if api_url and api_url.strip():
+        return clean_api_url(api_url), False
+
+    nitro_api_url = clean_env_value("NITRO_API_BASE_URL")
+    if nitro_api_url:
+        return clean_api_url(nitro_api_url), False
+
+    proxy_url = clean_env_value("PROXY_URL")
+    if proxy_url:
+        return clean_api_url(proxy_url), True
+
+    return DEFAULT_API_BASE_URL, False
+
+
+API_BASE_URL, _PROXY_URL_SELECTED = resolve_api_base_url()
+SUBMISSION_PROXY_MODE = env_flag("NITRO_SUBMISSION_PROXY") or _PROXY_URL_SELECTED
 UA = "Nitro CLI/0.1"
 DEFAULT_PAGE_SIZE = 20
 DEFAULT_SUBMISSION_PAGE_SIZE = 10
@@ -215,10 +248,10 @@ def api_request_text(**kwargs: Any) -> tuple[int, str, dict[str, str]]:
 
 def configure_runtime(api_url: str | None, submission_proxy: bool) -> None:
     global API_BASE_URL, SUBMISSION_PROXY_MODE
-    if api_url:
-        API_BASE_URL = api_url.rstrip("/")
-    if submission_proxy:
-        SUBMISSION_PROXY_MODE = True
+    API_BASE_URL, proxy_url_selected = resolve_api_base_url(api_url)
+    SUBMISSION_PROXY_MODE = (
+        submission_proxy or env_flag("NITRO_SUBMISSION_PROXY") or proxy_url_selected
+    )
 
 
 def parse_singlefetch(body: str) -> dict[str, Any] | list[Any] | None:
@@ -2585,13 +2618,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Nitro AI Judge CLI")
     parser.add_argument(
         "--api-url",
-        help="Backend API base URL (default: NITRO_API_BASE_URL or judge.nitro-ai.org/api)",
+        help=(
+            "Backend API base URL (default: NITRO_API_BASE_URL, then PROXY_URL, "
+            "then judge.nitro-ai.org/api)"
+        ),
     )
     parser.add_argument(
         "--submission-proxy",
         action="store_true",
-        default=SUBMISSION_PROXY_MODE,
-        help="Submit through the Contestant Cloud submission proxy",
+        help=(
+            "Submit through the Contestant Cloud submission proxy "
+            "(also enabled when PROXY_URL is used as the API URL)"
+        ),
     )
     sub = parser.add_subparsers(dest="cmd")
 
