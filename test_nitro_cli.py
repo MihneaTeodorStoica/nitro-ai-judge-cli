@@ -1,5 +1,7 @@
 import os
+import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import nitro_cli
@@ -78,6 +80,63 @@ class RuntimeConfigTests(unittest.TestCase):
         )
         self.assertEqual(api_url, nitro_cli.DEFAULT_API_BASE_URL)
         self.assertTrue(proxy_mode)
+
+
+class PlayCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.original_play_state_dir = nitro_cli.PLAY_STATE_DIR
+
+    def tearDown(self):
+        nitro_cli.PLAY_STATE_DIR = self.original_play_state_dir
+        self.tempdir.cleanup()
+
+    def test_play_destroy_removes_workdir_and_uses_volume_cleanup(self):
+        nitro_cli.PLAY_STATE_DIR = self.tempdir.name
+        workdir = nitro_cli.play_workdir("algolymp", "contest")
+        os.makedirs(workdir, exist_ok=True)
+        with open(
+            os.path.join(workdir, "docker-compose.yml"), "w", encoding="utf-8"
+        ) as f:
+            f.write("services: {}\n")
+        with open(os.path.join(workdir, "stale.txt"), "w", encoding="utf-8") as f:
+            f.write("x")
+
+        calls = []
+
+        def fake_run_process(cmd, *, cwd=None, check=True):
+            calls.append((cmd, cwd, check))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(nitro_cli, "run_process", side_effect=fake_run_process), patch.object(
+            nitro_cli, "ensure_docker_ready"
+        ), patch.object(nitro_cli, "remove_play_network_if_unused") as remove_network:
+            result = nitro_cli.cmd_play_destroy("algolymp", "contest")
+
+        self.assertEqual(result, 0)
+        self.assertFalse(os.path.exists(workdir))
+        self.assertEqual(
+            calls[-1][0],
+            [
+                "docker",
+                "compose",
+                "--project-name",
+                nitro_cli.play_project_name("algolymp", "contest"),
+                "--file",
+                os.path.join(workdir, "docker-compose.yml"),
+                "down",
+                "-v",
+                "--remove-orphans",
+            ],
+        )
+        self.assertEqual(calls[-1][1], workdir)
+        remove_network.assert_called_once()
+
+    def test_play_destroy_reports_missing_environment(self):
+        nitro_cli.PLAY_STATE_DIR = self.tempdir.name
+        with patch.object(nitro_cli, "ensure_docker_ready"):
+            result = nitro_cli.cmd_play_destroy("algolymp", "contest")
+        self.assertEqual(result, 0)
 
 
 if __name__ == "__main__":

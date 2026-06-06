@@ -81,6 +81,7 @@ nitro-cli play algolymp/algolymp-preojia-ix-x
 nitro-cli play algolymp/algolymp-preojia-ix-x --gpu --port 8890
 nitro-cli play logs algolymp/algolymp-preojia-ix-x
 nitro-cli play down algolymp/algolymp-preojia-ix-x
+nitro-cli play destroy algolymp/algolymp-preojia-ix-x
 nitro-cli submissions algolymp/algolymp-preojia-ix-x 1 --mode both
 nitro-cli submission 3a009d767bd5 --org algolymp --comp algolymp-preojia-ix-x --task-id 1
 nitro-cli submit algolymp/algolymp-preojia-ix-x 1 --output submission.csv --source solution.py --wait
@@ -110,6 +111,7 @@ Past-contest play:
 ```bash
 nitro-cli play algolymp/algolymp-preojia-ix-x
 nitro-cli play down algolymp/algolymp-preojia-ix-x
+nitro-cli play destroy algolymp/algolymp-preojia-ix-x
 nitro-cli play logs algolymp/algolymp-preojia-ix-x
 ```
 

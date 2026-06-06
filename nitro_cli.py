@@ -17,6 +17,7 @@ Usage:
     nitro-cli play <org>/<comp> [--gpu] [--port PORT]
     nitro-cli play logs <org>/<comp>
     nitro-cli play down <org>/<comp>
+    nitro-cli play destroy <org>/<comp>
     nitro-cli submit <org> <comp> <task_id> --output FILE [--source FILE] [--note TEXT] [--wait]
     nitro-cli submissions <org> <comp> <task_id> [--author USER] [--page N] [--page-size N] [--mode MODE]
     nitro-cli submission <submission_id>
@@ -35,6 +36,7 @@ from html.parser import HTMLParser
 import json
 import os
 import readline
+import shutil
 import shlex
 import socket
 import subprocess
@@ -529,6 +531,24 @@ def cmd_play_down(org: str, comp: str) -> int:
     return 0
 
 
+def cmd_play_destroy(org: str, comp: str) -> int:
+    ensure_docker_ready()
+    workdir = play_workdir(org, comp)
+    compose_file = os.path.join(workdir, "docker-compose.yml")
+    if not os.path.exists(compose_file):
+        shutil.rmtree(workdir, ignore_errors=True)
+        print(f"No play environment found: {workdir}")
+        return 0
+    run_process(
+        [*play_compose_base_cmd(org, comp), "down", "-v", "--remove-orphans"],
+        cwd=workdir,
+    )
+    remove_play_network_if_unused()
+    shutil.rmtree(workdir, ignore_errors=True)
+    print(f"Destroyed {org}/{comp}")
+    return 0
+
+
 def cmd_play_logs(org: str, comp: str) -> int:
     ensure_docker_ready()
     workdir = play_workdir(org, comp)
@@ -549,10 +569,10 @@ def cmd_play_logs(org: str, comp: str) -> int:
 def cmd_play(args: argparse.Namespace) -> int:
     parts = list(args.play_args)
     if not parts:
-        print("Error: play requires <org>/<comp> or down/logs <org>/<comp>")
+        print("Error: play requires <org>/<comp> or down/logs/destroy <org>/<comp>")
         return 1
     action = "up"
-    if parts[0] in {"down", "logs"}:
+    if parts[0] in {"down", "logs", "destroy"}:
         action = parts.pop(0)
     try:
         org, comp = parse_competition_ref(parts)
@@ -560,6 +580,8 @@ def cmd_play(args: argparse.Namespace) -> int:
             return cmd_play_down(org, comp)
         if action == "logs":
             return cmd_play_logs(org, comp)
+        if action == "destroy":
+            return cmd_play_destroy(org, comp)
         return cmd_play_up(org, comp, gpu=args.gpu, port=args.port)
     except (RuntimeError, ValueError) as e:
         print(f"Error: {e}")
