@@ -41,6 +41,7 @@ import shlex
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error as urllib_error
 import urllib.parse
@@ -52,6 +53,32 @@ from typing import Any
 BASE_URL = "https://judge.nitro-ai.org"
 DEFAULT_API_BASE_URL = f"{BASE_URL}/api"
 TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+SPINNER_FRAMES = "|/-\\"
+SPINNER_INTERVAL_SECONDS = 0.12
+
+
+def _start_spinner(prefix: str) -> tuple[threading.Event, threading.Thread]:
+    stop_event = threading.Event()
+
+    def _run() -> None:
+        index = 0
+        frame_count = len(SPINNER_FRAMES)
+        while not stop_event.is_set():
+            sys.stdout.write(f"\r{prefix} {SPINNER_FRAMES[index]}")
+            sys.stdout.flush()
+            index = (index + 1) % frame_count
+            stop_event.wait(SPINNER_INTERVAL_SECONDS)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return stop_event, thread
+
+
+def _stop_spinner(stop_event: threading.Event, thread: threading.Thread) -> None:
+    stop_event.set()
+    thread.join()
+    sys.stdout.write("\r\033[K")
+    sys.stdout.flush()
 
 
 def clean_env_value(name: str) -> str | None:
@@ -1379,29 +1406,36 @@ def download_task_data(
     task_file_links = load_task_file_links(cookies, org, comp, task_id)
     results: list[dict[str, Any]] = []
     for category in normalized_categories:
-        if category == "statement":
-            body = task_statement_markdown(cookies, bearer, org, comp, task_id)
-            headers: dict[str, str] = {}
-        else:
-            status, body, headers = download_task_file(
-                cookies, bearer, org, comp, task_id, category, task_file_links
-            )
-            if status != 200 or response_is_html(body, headers):
-                if not explicit_categories:
-                    continue
-                preview = body.decode("utf-8", errors="replace")
-                raise RuntimeError(
-                    f"Could not download {category}: HTTP {status}: {error_preview(preview)}"
+        spinner_stop: threading.Event | None = None
+        spinner_thread: threading.Thread | None = None
+        spinner_stop, spinner_thread = _start_spinner(f"Downloading {category} ...")
+        try:
+            if category == "statement":
+                body = task_statement_markdown(cookies, bearer, org, comp, task_id)
+                headers: dict[str, str] = {}
+            else:
+                status, body, headers = download_task_file(
+                    cookies, bearer, org, comp, task_id, category, task_file_links
                 )
-        path = write_task_file(
-            body,
-            headers,
-            category,
-            output_path,
-            output_dir,
-            force=force,
-        )
-        results.append({"category": category, "path": path, "bytes": len(body)})
+                if status != 200 or response_is_html(body, headers):
+                    if not explicit_categories:
+                        continue
+                    preview = body.decode("utf-8", errors="replace")
+                    raise RuntimeError(
+                        f"Could not download {category}: HTTP {status}: {error_preview(preview)}"
+                    )
+            path = write_task_file(
+                body,
+                headers,
+                category,
+                output_path,
+                output_dir,
+                force=force,
+            )
+            results.append({"category": category, "path": path, "bytes": len(body)})
+        finally:
+            if spinner_stop is not None and spinner_thread is not None:
+                _stop_spinner(spinner_stop, spinner_thread)
     if not results:
         raise RuntimeError("No downloadable task data files found")
     return results
