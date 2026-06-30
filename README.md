@@ -33,7 +33,7 @@ Behavior:
 Example:
 
 ```bash
-nitro-cli login --username MihneaStoica --password '...'
+nitro-cli login --username MihneaStoica
 ```
 
 ## Installation
@@ -146,7 +146,7 @@ Shell commands:
 help
 exit | quit
 back | unselect
-login [username] [password]
+login [username]
 status
 contests
 contest list [--all] [--page N] [--page-size N] [--all-pages]

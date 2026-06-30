@@ -5,7 +5,7 @@ Nitro AI Judge CLI.
 Usage:
     nitro-cli
     nitro-cli [--api-url URL] [--submission-proxy] <command>
-    nitro-cli login [--username USER --password PASS]
+    nitro-cli login [--username USER]
     nitro-cli contests [--page N] [--page-size N] [--all-pages] [--all]
     nitro-cli tasks <org> <comp>
     nitro-cli tasks <org>/<comp>
@@ -515,6 +515,11 @@ def write_play_files(org: str, comp: str, port: int, gpu: bool) -> str:
       PROXY_PREJUDGING_TIMEOUT_S: "120"
     secrets:
       - session_whitelist_bypass_key
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
     networks:
       - {PLAY_NETWORK}
 
@@ -2005,7 +2010,7 @@ def shell_help() -> None:
   help
   exit | quit
   back | unselect
-  login [username] [password]
+  login [username]
   status
   contests
   contest list [--all] [--all-pages] [--page N] [--page-size N]
@@ -2480,8 +2485,7 @@ def run_shell() -> int:
                 continue
             if parts[0] == "login":
                 username = parts[1] if len(parts) > 1 else None
-                password = parts[2] if len(parts) > 2 else None
-                if cmd_login(username, password) == 0:
+                if cmd_login(username, None) == 0:
                     auth_data = require_auth()
                     if auth_data:
                         state, cookies, bearer = auth_data
@@ -2691,7 +2695,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_login = sub.add_parser("login", help="Login to Nitro Judge")
     p_login.add_argument("--username")
-    p_login.add_argument("--password")
 
     p_contests = sub.add_parser("contests", help="List competitions")
     p_contests.add_argument("--page", type=int, default=1)
@@ -2789,7 +2792,7 @@ def main(argv: list[str] | None = None) -> int:
         return run_shell()
 
     if args.cmd == "login":
-        return cmd_login(args.username, args.password)
+        return cmd_login(args.username, None)
 
     if args.cmd == "play":
         return cmd_play(args)
