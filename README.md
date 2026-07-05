@@ -80,8 +80,8 @@ nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --category test_data --
 nitro-cli play algolymp/algolymp-preojia-ix-x
 nitro-cli play algolymp/algolymp-preojia-ix-x --gpu --port 8890
 nitro-cli play logs algolymp/algolymp-preojia-ix-x
+nitro-cli play stop algolymp/algolymp-preojia-ix-x
 nitro-cli play down algolymp/algolymp-preojia-ix-x
-nitro-cli play destroy algolymp/algolymp-preojia-ix-x
 nitro-cli submissions algolymp/algolymp-preojia-ix-x 1 --mode both
 nitro-cli submission 3a009d767bd5 --org algolymp --comp algolymp-preojia-ix-x --task-id 1
 nitro-cli submit algolymp/algolymp-preojia-ix-x 1 --output submission.csv --source solution.py --wait
@@ -110,12 +110,19 @@ Past-contest play:
 
 ```bash
 nitro-cli play algolymp/algolymp-preojia-ix-x
-nitro-cli play down algolymp/algolymp-preojia-ix-x
-nitro-cli play destroy algolymp/algolymp-preojia-ix-x
 nitro-cli play logs algolymp/algolymp-preojia-ix-x
+nitro-cli play stop algolymp/algolymp-preojia-ix-x
+nitro-cli play down algolymp/algolymp-preojia-ix-x
 ```
 
 `play` requires Docker and `docker compose`. It stores generated Compose files under `~/.nitro-cli/contestant-cloud/<org>-<comp>/`, creates the external `nitro_net` Docker network, and starts the contest notebook plus submission proxy.
+
+Lifecycle commands:
+
+- `nitro-cli play <org>/<comp>` writes the Compose files, pulls the Docker images, and starts Jupyter plus the submission proxy.
+- `nitro-cli play logs <org>/<comp>` follows the Docker Compose logs for that contest.
+- `nitro-cli play stop <org>/<comp>` stops the containers but keeps generated files and Docker volumes so the environment can be started again.
+- `nitro-cli play down <org>/<comp>` stops the containers, removes volumes/orphans, and deletes the generated play files.
 
 Interactive shell:
 
@@ -131,6 +138,8 @@ contest list
 contest list --page 2
 contest list --all-pages
 select 20
+play
+play stop
 tasks
 select 1
 show
@@ -152,6 +161,10 @@ contests
 contest list [--all] [--page N] [--page-size N] [--all-pages]
 contest select <index|org/slug>
 contest show
+play [<org>/<comp>] [--gpu] [--port PORT]
+play logs [<org>/<comp>]
+play stop [<org>/<comp>]
+play down [<org>/<comp>]
 tasks
 task list
 task select <index|id>
@@ -174,6 +187,7 @@ Notes:
 
 - `select` is context-sensitive: at top level it selects a contest; inside a contest it selects a task.
 - `back` / `unselect` clears the current task first, then the current contest.
+- `play` uses the selected contest when no `<org>/<comp>` is given.
 
 ## State
 
@@ -206,7 +220,7 @@ python3 -m pip install --upgrade build twine
 python3 -m build
 python3 -m twine check dist/*
 # bump version in pyproject.toml before tagging a new release
-git tag v0.1.3
+git tag v1.8.0
 git push origin main --tags
 ```
 

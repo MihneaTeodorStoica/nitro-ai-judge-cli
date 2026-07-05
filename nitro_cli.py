@@ -16,8 +16,8 @@ Usage:
     nitro-cli play <org> <comp> [--gpu] [--port PORT]
     nitro-cli play <org>/<comp> [--gpu] [--port PORT]
     nitro-cli play logs <org>/<comp>
+    nitro-cli play stop <org>/<comp>
     nitro-cli play down <org>/<comp>
-    nitro-cli play destroy <org>/<comp>
     nitro-cli submit <org> <comp> <task_id> --output FILE [--source FILE] [--note TEXT] [--wait]
     nitro-cli submissions <org> <comp> <task_id> [--author USER] [--page N] [--page-size N] [--mode MODE]
     nitro-cli submission <submission_id>
@@ -551,7 +551,7 @@ def cmd_play_up(org: str, comp: str, *, gpu: bool, port: int) -> int:
     return 0
 
 
-def cmd_play_down(org: str, comp: str) -> int:
+def cmd_play_stop(org: str, comp: str) -> int:
     ensure_docker_ready()
     workdir = play_workdir(org, comp)
     if not os.path.exists(os.path.join(workdir, "docker-compose.yml")):
@@ -563,7 +563,7 @@ def cmd_play_down(org: str, comp: str) -> int:
     return 0
 
 
-def cmd_play_destroy(org: str, comp: str) -> int:
+def cmd_play_down(org: str, comp: str) -> int:
     ensure_docker_ready()
     workdir = play_workdir(org, comp)
     compose_file = os.path.join(workdir, "docker-compose.yml")
@@ -577,7 +577,7 @@ def cmd_play_destroy(org: str, comp: str) -> int:
     )
     remove_play_network_if_unused()
     shutil.rmtree(workdir, ignore_errors=True)
-    print(f"Destroyed {org}/{comp}")
+    print(f"Removed {org}/{comp}")
     return 0
 
 
@@ -601,19 +601,19 @@ def cmd_play_logs(org: str, comp: str) -> int:
 def cmd_play(args: argparse.Namespace) -> int:
     parts = list(args.play_args)
     if not parts:
-        print("Error: play requires <org>/<comp> or down/logs/destroy <org>/<comp>")
+        print("Error: play requires <org>/<comp> or stop/logs/down <org>/<comp>")
         return 1
     action = "up"
-    if parts[0] in {"down", "logs", "destroy"}:
+    if parts[0] in {"stop", "logs", "down"}:
         action = parts.pop(0)
     try:
         org, comp = parse_competition_ref(parts)
-        if action == "down":
-            return cmd_play_down(org, comp)
+        if action == "stop":
+            return cmd_play_stop(org, comp)
         if action == "logs":
             return cmd_play_logs(org, comp)
-        if action == "destroy":
-            return cmd_play_destroy(org, comp)
+        if action == "down":
+            return cmd_play_down(org, comp)
         return cmd_play_up(org, comp, gpu=args.gpu, port=args.port)
     except (RuntimeError, ValueError) as e:
         print(f"Error: {e}")
@@ -2016,6 +2016,10 @@ def shell_help() -> None:
   contest list [--all] [--all-pages] [--page N] [--page-size N]
   contest select <index|org/slug>
   contest show
+  play [<org>/<comp>] [--gpu] [--port PORT]
+  play logs [<org>/<comp>]
+  play stop [<org>/<comp>]
+  play down [<org>/<comp>]
   tasks
   task list
   task select <index|id>
@@ -2038,6 +2042,7 @@ Notes:
     - at top level, it selects a contest
     - inside a contest, it selects a task
   back/unselect clears the current task first, then the current contest
+  play without <org>/<comp> uses the selected contest
 """
     )
 
@@ -2084,6 +2089,7 @@ def setup_readline(ctx: dict[str, Any]) -> None:
             "status",
             "contests",
             "contest",
+            "play",
             "tasks",
             "task",
             "select",
@@ -2097,6 +2103,8 @@ def setup_readline(ctx: dict[str, Any]) -> None:
         ]
         if parts[:1] == ["contest"]:
             candidates = ["list", "select", "show"]
+        elif parts[:1] == ["play"]:
+            candidates = ["logs", "stop", "down", "--gpu", "--port"]
         elif parts[:1] == ["submission"]:
             candidates = ["view"]
         elif parts[:2] == ["contest", "list"]:
@@ -2426,6 +2434,51 @@ def shell_back(ctx: dict[str, Any]) -> None:
     print("Already at top level")
 
 
+def shell_play(parts: list[str], ctx: dict[str, Any]) -> int:
+    action = "up"
+    args = parts[1:]
+    if args and args[0] in {"logs", "stop", "down"}:
+        action = args.pop(0)
+
+    gpu = "--gpu" in args
+    port = PLAY_DEFAULT_PORT
+    if "--port" in args:
+        port_index = args.index("--port")
+        if port_index + 1 >= len(args):
+            print("Error: --port requires a value")
+            return 1
+        port = int(args[port_index + 1])
+
+    ref_parts = []
+    index = 0
+    while index < len(args):
+        if args[index] == "--gpu":
+            index += 1
+            continue
+        if args[index] == "--port":
+            index += 2
+            continue
+        ref_parts.append(args[index])
+        index += 1
+    if ref_parts:
+        org, comp = parse_competition_ref(ref_parts)
+    else:
+        contest = ctx.get("contest")
+        if not contest:
+            print("Error: play requires <org>/<comp> or a selected contest")
+            return 1
+        org = contest.get("organizationSlug")
+        comp = contest.get("competitionSlug")
+
+    if action == "logs":
+        return cmd_play_logs(org, comp)
+    if action == "stop":
+        return cmd_play_stop(org, comp)
+    if action == "down":
+        return cmd_play_down(org, comp)
+    return cmd_play_up(org, comp, gpu=gpu, port=port)
+
+
 def run_shell() -> int:
     auth_data = shell_ensure_auth()
     if not auth_data:
@@ -2535,6 +2588,12 @@ def run_shell() -> int:
                 continue
             if parts[:2] == ["contest", "show"]:
                 shell_show_contest(ctx)
+                continue
+            if parts[0] == "play":
+                try:
+                    shell_play(parts, ctx)
+                except ValueError as e:
+                    print(f"Error: {e}")
                 continue
             if parts[0] == "tasks":
                 shell_list_tasks(ctx)
@@ -2675,7 +2734,19 @@ def run_shell() -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Nitro AI Judge CLI")
+    parser = argparse.ArgumentParser(
+        description="Nitro AI Judge CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  nitro-cli contests
+  nitro-cli tasks algolymp/algolymp-preojia-ix-x
+  nitro-cli download-data algolymp/algolymp-preojia-ix-x 1 --out-dir data
+  nitro-cli play algolymp/algolymp-preojia-ix-x
+  nitro-cli play stop algolymp/algolymp-preojia-ix-x
+  nitro-cli play down algolymp/algolymp-preojia-ix-x
+  nitro-cli submit algolymp/algolymp-preojia-ix-x 1 --output submission.csv
+""",
+    )
     parser.add_argument(
         "--api-url",
         help=(
@@ -2726,10 +2797,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_download.add_argument("--output", help="Output file path for a single category")
     p_download.add_argument("--force", action="store_true", help="Overwrite files")
 
-    p_play = sub.add_parser("play", help="Launch a past contest locally with Docker")
-    p_play.add_argument("play_args", nargs="*")
+    p_play = sub.add_parser(
+        "play",
+        help="Launch or manage a past contest locally with Docker",
+        description="Launch or manage a past contest locally with Docker.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Commands:
+  nitro-cli play <org>/<comp> [--gpu] [--port PORT]
+  nitro-cli play logs <org>/<comp>
+  nitro-cli play stop <org>/<comp>
+  nitro-cli play down <org>/<comp>
+
+Lifecycle:
+  play       writes Compose files, pulls images, and starts the notebook/proxy
+  play logs  follows Docker Compose logs
+  play stop  stops containers and keeps generated files/volumes
+  play down  stops containers, removes volumes/orphans, and deletes generated files
+""",
+    )
+    p_play.add_argument("play_args", nargs="*", metavar="ACTION_OR_COMPETITION")
     p_play.add_argument("--gpu", action="store_true", help="Request NVIDIA GPU access")
-    p_play.add_argument("--port", type=int, default=PLAY_DEFAULT_PORT)
+    p_play.add_argument(
+        "--port", type=int, default=PLAY_DEFAULT_PORT, help="Host Jupyter port"
+    )
 
     p_submit = sub.add_parser("submit", help="Create a submission")
     p_submit.add_argument("competition", nargs="+", help="<org>/<comp> or <org> <comp>")

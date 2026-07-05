@@ -91,7 +91,7 @@ class PlayCommandTests(unittest.TestCase):
         nitro_cli.PLAY_STATE_DIR = self.original_play_state_dir
         self.tempdir.cleanup()
 
-    def test_play_destroy_removes_workdir_and_uses_volume_cleanup(self):
+    def test_play_down_removes_workdir_and_uses_volume_cleanup(self):
         nitro_cli.PLAY_STATE_DIR = self.tempdir.name
         workdir = nitro_cli.play_workdir("algolymp", "contest")
         os.makedirs(workdir, exist_ok=True)
@@ -111,7 +111,7 @@ class PlayCommandTests(unittest.TestCase):
         with patch.object(nitro_cli, "run_process", side_effect=fake_run_process), patch.object(
             nitro_cli, "ensure_docker_ready"
         ), patch.object(nitro_cli, "remove_play_network_if_unused") as remove_network:
-            result = nitro_cli.cmd_play_destroy("algolymp", "contest")
+            result = nitro_cli.cmd_play_down("algolymp", "contest")
 
         self.assertEqual(result, 0)
         self.assertFalse(os.path.exists(workdir))
@@ -132,11 +132,33 @@ class PlayCommandTests(unittest.TestCase):
         self.assertEqual(calls[-1][1], workdir)
         remove_network.assert_called_once()
 
-    def test_play_destroy_reports_missing_environment(self):
+    def test_play_down_reports_missing_environment(self):
         nitro_cli.PLAY_STATE_DIR = self.tempdir.name
         with patch.object(nitro_cli, "ensure_docker_ready"):
-            result = nitro_cli.cmd_play_destroy("algolymp", "contest")
+            result = nitro_cli.cmd_play_down("algolymp", "contest")
         self.assertEqual(result, 0)
+
+    def test_play_cli_maps_stop_and_down_names(self):
+        args = SimpleNamespace(play_args=["stop", "algolymp/contest"], gpu=False, port=8888)
+        with patch.object(nitro_cli, "cmd_play_stop", return_value=0) as stop:
+            self.assertEqual(nitro_cli.cmd_play(args), 0)
+        stop.assert_called_once_with("algolymp", "contest")
+
+        args = SimpleNamespace(play_args=["down", "algolymp/contest"], gpu=False, port=8888)
+        with patch.object(nitro_cli, "cmd_play_down", return_value=0) as down:
+            self.assertEqual(nitro_cli.cmd_play(args), 0)
+        down.assert_called_once_with("algolymp", "contest")
+
+    def test_shell_play_uses_selected_contest(self):
+        ctx = {
+            "contest": {
+                "organizationSlug": "algolymp",
+                "competitionSlug": "contest",
+            }
+        }
+        with patch.object(nitro_cli, "cmd_play_stop", return_value=0) as stop:
+            self.assertEqual(nitro_cli.shell_play(["play", "stop"], ctx), 0)
+        stop.assert_called_once_with("algolymp", "contest")
 
 
 if __name__ == "__main__":
