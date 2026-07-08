@@ -469,7 +469,7 @@ def write_play_files(org: str, comp: str, port: int, gpu: bool) -> str:
             "JUPYTER_BASE_URL=http://jupyter-server:8888/",
             "SESSION_WHITELIST_BYPASS_KEY_FILE=/run/secrets/session_whitelist_bypass_key",
             "PROXY_DISABLE_CACHE=1",
-            "PROXY_PREJUDGING_TIMEOUT_S=120",
+            "PROXY_PREJUDGING_TIMEOUT_S=300",
             "",
         ]
     )
@@ -512,7 +512,7 @@ def write_play_files(org: str, comp: str, port: int, gpu: bool) -> str:
       JUPYTER_BASE_URL: "http://jupyter-server:8888/"
       SESSION_WHITELIST_BYPASS_KEY_FILE: "/run/secrets/session_whitelist_bypass_key"
       PROXY_DISABLE_CACHE: "1"
-      PROXY_PREJUDGING_TIMEOUT_S: "120"
+      PROXY_PREJUDGING_TIMEOUT_S: "300"
     secrets:
       - session_whitelist_bypass_key
     cap_add:
@@ -1531,7 +1531,7 @@ def create_submission(
             method="POST",
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
-            timeout=120,
+            timeout=300,
         )
         if status not in {200, 201}:
             raise RuntimeError(f"HTTP {status}: {error_preview(body)}")
@@ -1562,7 +1562,7 @@ def create_submission(
         method="POST",
         data=data,
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        timeout=120,
+        timeout=300,
     )
     if status not in {200, 201}:
         raise RuntimeError(f"HTTP {status}: {error_preview(body)}")
