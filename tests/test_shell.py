@@ -134,10 +134,31 @@ class ShellContextTests(unittest.TestCase):
         self.assertFalse(shell._numeric_select("9"))
         self.assertEqual(state.load_context(), before)
 
+    def test_completed_entities_select_cached_context_case_insensitively(self) -> None:
+        state.save_context(
+            {
+                "cache": {
+                    "contests": {
+                        "all": [
+                            {"organizationSlug": "CeoAI", "competitionSlug": "Open"}
+                        ]
+                    },
+                    "tasks": {"CeoAI/Open": [{"id": "Forecast"}]},
+                    "submissions": {
+                        "CeoAI/Open/Forecast": [{"id": "submission-ABC123"}]
+                    },
+                }
+            }
+        )
+
+        self.assertTrue(shell._entity_select("ceoai/open"))
+        self.assertTrue(shell._entity_select("forecast"))
+        self.assertTrue(shell._entity_select("abc123"))
+        self.assertEqual(state.selected_submission(), "submission-ABC123")
+
 
 class ReadlineTests(unittest.TestCase):
     def test_readline_wires_forward_backward_and_slash_aware_completion(self) -> None:
-        context = {"cache": {}}
         completer_set = Mock()
         bindings: list[str] = []
 
@@ -159,8 +180,6 @@ class ReadlineTests(unittest.TestCase):
             ), patch.object(
                 shell.readline, "get_begidx", return_value=len("use ")
             ), patch.object(
-                shell, "load_context", return_value=context
-            ), patch.object(
                 shell, "candidates", return_value=["Acme/Open"]
             ) as candidates:
                 shell.setup_readline()
@@ -172,7 +191,7 @@ class ReadlineTests(unittest.TestCase):
         self.assertNotIn("/", delimiters.call_args.args[0])
         self.assertIn("tab: menu-complete", bindings)
         self.assertIn('"\\e[Z": menu-complete-backward', bindings)
-        candidates.assert_called_once_with(["use", "Acme/"], context)
+        candidates.assert_called_once_with(["use", "Acme/"], interactive=True)
 
 
 if __name__ == "__main__":

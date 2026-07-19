@@ -1,11 +1,11 @@
-"""Pure, offline completion candidates and shell-script generators."""
+"""Context-aware completion candidates and shell-script generators."""
 
 from __future__ import annotations
 
 import os
 from typing import Any, Iterable
 
-from .config import TASK_FILE_CATEGORIES
+from .config import DEFAULT_PAGE_SIZE, DEFAULT_SUBMISSION_PAGE_SIZE, TASK_FILE_CATEGORIES
 from .state import load_context, selected_contest, selected_task
 
 
@@ -31,11 +31,25 @@ OPTIONS = {
     "completion": ("--help",),
 }
 PLAY_ACTIONS = ("up", "start", "stop", "restart", "down", "logs", "ps", "status")
+VALUE_OPTIONS = {
+    "contests": {"--page", "--page-size"},
+    "download-data": {"-c", "--category", "-d", "--out-dir", "-o", "--output"},
+    "play": {"--port", "--proxy-port", "--bind", "--pull", "--wait-timeout"},
+    "submit": {"-o", "--output", "-s", "--source", "-n", "--note"},
+    "submissions": {
+        "-a", "--author", "-p", "--page", "-n", "--page-size", "-m", "--mode",
+    },
+    "submission": {"--org", "--comp", "--task-id"},
+}
 
 
 def _matches(candidates: Iterable[str], prefix: str) -> list[str]:
     lowered = prefix.lower()
-    return sorted({item for item in candidates if item.lower().startswith(lowered)}, key=str.lower)
+    matches: dict[str, str] = {}
+    for item in candidates:
+        if item.lower().startswith(lowered):
+            matches.setdefault(item.casefold(), item)
+    return sorted(matches.values(), key=str.lower)
 
 
 def _filesystem(prefix: str) -> list[str]:
@@ -79,13 +93,14 @@ def _cached_contests(context: dict[str, Any]) -> list[str]:
     return result
 
 
-def _cached_tasks(context: dict[str, Any]) -> list[str]:
-    selected = selected_contest(context)
-    if not selected:
+def _cached_tasks_for(
+    context: dict[str, Any], contest: tuple[str, str] | None
+) -> list[str]:
+    if not contest:
         return []
     cache = context.get("cache", {})
     bucket = cache.get("tasks", {}) if isinstance(cache, dict) else {}
-    items = bucket.get(f"{selected[0]}/{selected[1]}", []) if isinstance(bucket, dict) else []
+    items = bucket.get(f"{contest[0]}/{contest[1]}", []) if isinstance(bucket, dict) else []
     result = []
     for item in items if isinstance(items, list) else []:
         if isinstance(item, dict) and item.get("id") is not None:
@@ -112,8 +127,148 @@ def _cached_submissions(context: dict[str, Any]) -> list[str]:
     return result
 
 
-def candidates(words: list[str], context: dict[str, Any] | None = None) -> list[str]:
-    """Return candidates using only supplied/local context and the filesystem."""
+def _cache_contains(context: dict[str, Any], kind: str, key: str) -> bool:
+    cache = context.get("cache", {})
+    bucket = cache.get(kind, {}) if isinstance(cache, dict) else {}
+    return isinstance(bucket, dict) and key in bucket
+
+
+def _positionals(command: str, words: list[str]) -> list[str]:
+    value_options = VALUE_OPTIONS.get(command, set())
+    result: list[str] = []
+    skip_value = False
+    for word in words:
+        if skip_value:
+            skip_value = False
+        elif word in value_options:
+            skip_value = True
+        elif not word.startswith("-"):
+            result.append(word)
+    return result
+
+
+def _explicit_contest(command: str, words: list[str]) -> tuple[str, str] | None:
+    positionals = _positionals(command, words)
+    for value in positionals:
+        if "/" in value:
+            org, comp = value.split("/", 1)
+            if org and comp:
+                return org, comp
+    if command != "use" and len(positionals) >= 2:
+        return positionals[0], positionals[1]
+    return None
+
+
+def _cache_scope(
+    committed: list[str], prefix: str, context: dict[str, Any], interactive: bool
+) -> tuple[str, str, tuple[str, ...]] | None:
+    if prefix.startswith("-"):
+        return None
+    if not committed:
+        if not interactive:
+            return None
+        contest = selected_contest(context)
+        if not contest:
+            return "contests", "all", ()
+        task = selected_task(context)
+        if task is None:
+            return "tasks", f"{contest[0]}/{contest[1]}", contest
+        return (
+            "submissions",
+            f"{contest[0]}/{contest[1]}/{task}",
+            (contest[0], contest[1], task),
+        )
+
+    command = committed[0]
+    arguments = committed[1:]
+    if arguments and (
+        arguments[-1] in VALUE_OPTIONS.get(command, set())
+        or arguments[-1].startswith("-")
+    ):
+        return None
+    contest = _explicit_contest(command, arguments) or selected_contest(context)
+    if command in {"tasks", "play"}:
+        return "contests", "all", ()
+    if command == "use" or command in {
+        "task", "download-data", "submit", "submissions"
+    }:
+        if contest:
+            return "tasks", f"{contest[0]}/{contest[1]}", contest
+        return "contests", "all", ()
+    if command in {"submission", "set-final", "unset-final"}:
+        task = selected_task(context)
+        if contest and task is not None:
+            return (
+                "submissions",
+                f"{contest[0]}/{contest[1]}/{task}",
+                (contest[0], contest[1], task),
+            )
+    return None
+
+
+def _fill_cache(
+    context: dict[str, Any], scope: tuple[str, str, tuple[str, ...]] | None
+) -> dict[str, Any]:
+    if scope is None:
+        return context
+    kind, key, target = scope
+    if _cache_contains(context, kind, key):
+        return context
+    try:
+        from .api import ensure_fresh_state, get_auth
+        from .contests import load_competitions, load_tasks
+        from .state import load_state, update_cache
+        from .submissions import get_username, load_submissions
+
+        auth_state = load_state()
+        if not auth_state:
+            return context
+        auth_state = ensure_fresh_state(auth_state)
+        auth = get_auth(auth_state) if auth_state else None
+        if not auth:
+            return context
+        cookies = (auth[0] or "", auth[1] or "")
+        bearer = auth[2]
+        if kind == "contests":
+            items = load_competitions(
+                cookies,
+                bearer,
+                page=None,
+                page_size=DEFAULT_PAGE_SIZE,
+                featured=None,
+                all_pages=True,
+            )
+        elif kind == "tasks":
+            items = load_tasks(cookies, bearer, target[0], target[1])
+        else:
+            items = []
+            for mode in ("partial", "complete"):
+                mode_items, _ = load_submissions(
+                    cookies,
+                    bearer,
+                    target[0],
+                    target[1],
+                    target[2],
+                    author=get_username(auth_state),
+                    page=None,
+                    page_size=DEFAULT_SUBMISSION_PAGE_SIZE,
+                    mode=mode,
+                )
+                items.extend(mode_items)
+        update_cache(kind, key, items)
+        return load_context()
+    except Exception:
+        return context
+
+
+def candidates(
+    words: list[str],
+    context: dict[str, Any] | None = None,
+    *,
+    interactive: bool = False,
+) -> list[str]:
+    """Return candidates, lazily filling local context when it was not supplied."""
+    supplied_context = context is not None
     context = load_context() if context is None else context
     words = list(words)
     prefix = words[-1] if words else ""
@@ -128,9 +283,7 @@ def candidates(words: list[str], context: dict[str, Any] | None = None) -> list[
             committed = committed[2:]
             continue
         break
-    if not committed:
-        return _matches((*COMMANDS, *GLOBAL_OPTIONS), prefix)
-    command = committed[0]
+    command = committed[0] if committed else ""
     previous = committed[-1] if committed else ""
     if previous in {"--category", "-c"}:
         return _matches(TASK_FILE_CATEGORIES, prefix)
@@ -140,18 +293,44 @@ def candidates(words: list[str], context: dict[str, Any] | None = None) -> list[
         return _matches(("always", "missing", "never"), prefix)
     if previous in {"--output", "-o", "--source", "-s", "--out-dir", "-d"}:
         return _filesystem(prefix)
+    if not supplied_context:
+        context = _fill_cache(
+            context, _cache_scope(committed, prefix, context, interactive)
+        )
     options = OPTIONS.get(command, ("--help",))
     include_options = options if not prefix else ()
+    if not committed:
+        entities: tuple[str, ...] = ()
+        if interactive:
+            contest = selected_contest(context)
+            task = selected_task(context)
+            if not contest:
+                entities = tuple(_cached_contests(context))
+            elif task is None:
+                entities = tuple(_cached_tasks_for(context, contest))
+            else:
+                entities = tuple(_cached_submissions(context))
+        return _matches((*COMMANDS, *GLOBAL_OPTIONS, *entities), prefix)
     if command == "completion":
         return _matches(("zsh", "bash", "fish", *include_options), prefix)
     if command == "play" and len(committed) == 1:
         return _matches((*PLAY_ACTIONS, *_cached_contests(context), *OPTIONS["play"]), prefix)
     if prefix.startswith("-"):
         return _matches(options, prefix)
-    if command in {"tasks", "play", "use"}:
+    if command in {"tasks", "play"}:
         return _matches((*_cached_contests(context), *include_options), prefix)
+    if command == "use":
+        contest = _explicit_contest(command, committed[1:]) or selected_contest(context)
+        return _matches(
+            (*_cached_contests(context), *_cached_tasks_for(context, contest), *include_options),
+            prefix,
+        )
     if command in {"task", "download-data", "submit", "submissions"}:
-        return _matches((*_cached_contests(context), *_cached_tasks(context), *include_options), prefix)
+        contest = _explicit_contest(command, committed[1:]) or selected_contest(context)
+        return _matches(
+            (*_cached_contests(context), *_cached_tasks_for(context, contest), *include_options),
+            prefix,
+        )
     if command in {"submission", "set-final", "unset-final"}:
         return _matches((*_cached_submissions(context), *include_options), prefix)
     return _matches(include_options, prefix)

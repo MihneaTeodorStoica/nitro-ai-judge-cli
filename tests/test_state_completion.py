@@ -15,7 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from nitro_ai_judge_cli import completion, config, state  # noqa: E402
+from nitro_ai_judge_cli import api, completion, config, contests, state, submissions  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):
@@ -279,6 +279,23 @@ class StateTests(unittest.TestCase):
 
 
 class CompletionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        state.configure_state_dir(self.temporary.name)
+        state.reset_state_paths()
+
+    def tearDown(self) -> None:
+        state.configure_state_dir(None)
+        state.reset_state_paths()
+        self.temporary.cleanup()
+
+    def auth_patches(self):
+        return (
+            patch.object(state, "load_state", return_value={"username": "ceo"}),
+            patch.object(api, "ensure_fresh_state", side_effect=lambda value: value),
+            patch.object(api, "get_auth", return_value=("cf", "session", "token")),
+        )
+
     def context(self) -> dict[str, object]:
         return {
             "contest": {"organizationSlug": "Acme", "competitionSlug": "Open"},
@@ -301,6 +318,12 @@ class CompletionTests(unittest.TestCase):
         self.assertIn("completion", completion.candidates(["co"], {}))
         self.assertIn("--api-url", completion.candidates(["--a"], {}))
 
+    def test_bare_native_completion_is_command_only_and_offline(self) -> None:
+        with patch.object(state, "load_state", side_effect=AssertionError("auth")):
+            values = completion.candidates([""])
+        self.assertIn("tasks", values)
+        self.assertFalse(any("/" in value for value in values))
+
     def test_cached_completion_is_case_insensitive_and_slash_aware(self) -> None:
         context = self.context()
         self.assertEqual(completion.candidates(["use", "ACME/"] , context), ["Acme/Open"])
@@ -311,6 +334,13 @@ class CompletionTests(unittest.TestCase):
             ["complete"],
         )
 
+    def test_command_names_take_precedence_over_same_named_entities(self) -> None:
+        context = self.context()
+        context["task"] = None
+        context["cache"]["tasks"]["Acme/Open"].append({"id": "TASKS"})
+        values = completion.candidates([""], context, interactive=True)
+        self.assertEqual([value for value in values if value.casefold() == "tasks"], ["tasks"])
+
     def test_completion_with_supplied_context_performs_no_state_or_network_io(self) -> None:
         context = self.context()
         with patch.object(completion, "load_context", side_effect=AssertionError("state")):
@@ -318,6 +348,115 @@ class CompletionTests(unittest.TestCase):
                 self.assertEqual(
                     completion.candidates(["use", "beta/"], context), ["Beta/Cup"]
                 )
+
+    def test_missing_contests_are_fetched_once_and_cached(self) -> None:
+        competitions = [
+            {"organizationSlug": "ceoai", "competitionSlug": "2026"}
+        ]
+        load = patch.object(contests, "load_competitions", return_value=competitions)
+        auth_state, fresh, auth = self.auth_patches()
+        with auth_state, fresh, auth, load as loader:
+            self.assertEqual(
+                completion.candidates(["ceo"], interactive=True), ["ceoai/2026"]
+            )
+            self.assertEqual(
+                completion.candidates(["ceo"], interactive=True), ["ceoai/2026"]
+            )
+
+        loader.assert_called_once_with(
+            ("cf", "session"),
+            "token",
+            page=None,
+            page_size=config.DEFAULT_PAGE_SIZE,
+            featured=None,
+            all_pages=True,
+        )
+        self.assertEqual(state.cached_items("contests", "all"), competitions)
+
+    def test_native_entity_command_lazily_fetches_contests(self) -> None:
+        competitions = [
+            {"organizationSlug": "ceoai", "competitionSlug": "2026"}
+        ]
+        auth_state, fresh, auth = self.auth_patches()
+        with auth_state, fresh, auth, patch.object(
+            contests, "load_competitions", return_value=competitions
+        ) as loader:
+            self.assertEqual(completion.candidates(["tasks", "ceo"]), ["ceoai/2026"])
+        loader.assert_called_once()
+
+    def test_selected_contest_fetches_tasks_for_bare_interactive_completion(self) -> None:
+        state.set_contest(
+            {"organizationSlug": "ceoai", "competitionSlug": "2026"}
+        )
+        tasks = [{"id": "forecast"}]
+        auth_state, fresh, auth = self.auth_patches()
+        with auth_state, fresh, auth, patch.object(
+            contests, "load_tasks", return_value=tasks
+        ) as loader:
+            values = completion.candidates([""], interactive=True)
+
+        self.assertIn("forecast", values)
+        loader.assert_called_once_with(("cf", "session"), "token", "ceoai", "2026")
+        self.assertEqual(state.cached_items("tasks", "ceoai/2026"), tasks)
+
+    def test_selected_task_fetches_both_submission_modes_and_short_ids(self) -> None:
+        state.set_contest(
+            {"organizationSlug": "ceoai", "competitionSlug": "2026"}
+        )
+        state.set_task({"id": "forecast"})
+
+        def load(*args, **kwargs):
+            item = {"id": f"submission-{kwargs['mode']}"}
+            return [item], 1
+
+        auth_state, fresh, auth = self.auth_patches()
+        with auth_state, fresh, auth, patch.object(
+            submissions, "load_submissions", side_effect=load
+        ) as loader:
+            values = completion.candidates([""], interactive=True)
+
+        self.assertIn("submission-partial", values)
+        self.assertIn("partial", values)
+        self.assertIn("submission-complete", values)
+        self.assertIn("complete", values)
+        self.assertEqual(
+            [call.kwargs["mode"] for call in loader.call_args_list],
+            ["partial", "complete"],
+        )
+        self.assertTrue(all(call.kwargs["author"] == "ceo" for call in loader.call_args_list))
+
+    def test_empty_cache_suppresses_fetch_and_failures_remain_retryable(self) -> None:
+        state.save_context({"cache": {"contests": {"all": []}}})
+        with patch.object(contests, "load_competitions") as loader:
+            completion.candidates([""], interactive=True)
+        loader.assert_not_called()
+
+        state.save_context({})
+        auth_state, fresh, auth = self.auth_patches()
+        with auth_state, fresh, auth, patch.object(
+            contests, "load_competitions", side_effect=RuntimeError("offline")
+        ) as loader:
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                first = completion.candidates([""], interactive=True)
+                second = completion.candidates([""], interactive=True)
+
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("contests", first)
+        self.assertEqual(first, second)
+        self.assertEqual(loader.call_count, 2)
+        self.assertNotIn("all", state.load_context().get("cache", {}).get("contests", {}))
+
+    def test_explicit_contest_completion_fetches_only_its_tasks(self) -> None:
+        tasks = [{"id": "vision"}]
+        auth_state, fresh, auth = self.auth_patches()
+        with auth_state, fresh, auth, patch.object(
+            contests, "load_tasks", return_value=tasks
+        ) as loader:
+            values = completion.candidates(["submit", "ceoai/2026", "v"])
+
+        self.assertEqual(values, ["vision"])
+        loader.assert_called_once_with(("cf", "session"), "token", "ceoai", "2026")
 
     def test_path_completion_is_local_and_case_insensitive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

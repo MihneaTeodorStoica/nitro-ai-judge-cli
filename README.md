@@ -211,11 +211,11 @@ Shell conveniences:
 
 - `ls`, `use`, and `show` have the same context-sensitive behavior as direct commands.
 - `..`, `back`, and `unselect` move up one selection level.
-- A bare number selects that cached contest, task, or submission.
+- A completed contest, task, or submission selects it directly; bare numbers remain available for indexed navigation.
 - `help COMMAND` displays command-specific help.
 - All regular commands work without a leading `naij`.
 - Tab cycles completion forward and Shift-Tab cycles backward.
-- Completion is case-insensitive and slash-aware, and covers commands, options, enum values, cached competitions/tasks/submissions, and filesystem paths.
+- Completion is case-insensitive and slash-aware, and covers commands, options, enum values, competitions/tasks/submissions, and filesystem paths.
 - Ctrl-C cancels the current line, Ctrl-D exits, and invalid input returns to the prompt.
 
 ## Native completion
@@ -241,7 +241,7 @@ source <(naij completion bash)
 naij completion fish | source
 ```
 
-Completion uses only the local context cache and filesystem. It never makes an API request on Tab. Until a successful list or selection operation populates the cache, static commands and options remain available.
+Completion lazily fetches a missing entity list on the first relevant Tab and saves it in the context cache. It fetches all competitions, only the selected or supplied competition's tasks, or the current user's partial and complete submissions for the selected task. Existing cache entries, including empty lists, suppress later requests; authentication and network failures stay silent and can be retried on a later Tab. Bare native completion remains command-only, while the interactive shell also offers the next entities for its current context.
 
 ## State and security
 
@@ -287,7 +287,7 @@ python3 -m unittest discover -s tests -v
 python3 -m pip install --upgrade build twine
 python3 -m build
 python3 -m twine check dist/*
-git tag v2.0.0
+git tag v2.1.0
 git push origin main --tags
 ```
 

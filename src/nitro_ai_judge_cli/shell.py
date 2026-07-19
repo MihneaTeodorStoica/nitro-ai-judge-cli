@@ -7,7 +7,7 @@ import readline
 import shlex
 from typing import Any, Callable
 
-from .completion import candidates
+from .completion import COMMANDS, candidates
 from .state import (
     atomic_write,
     cached_items,
@@ -73,7 +73,7 @@ def setup_readline() -> None:
                 words = shlex.split(line[:start])
             except ValueError:
                 words = line[:start].split()
-            cache = candidates([*words, text], load_context())
+            cache = candidates([*words, text], interactive=True)
         return cache[state] if state < len(cache) else None
 
     readline.set_completer(completer)
@@ -169,6 +169,51 @@ def _numeric_select(token: str) -> bool:
     return False
 
 
+def _entity_select(token: str) -> bool:
+    context = load_context()
+    contest = selected_contest(context)
+    task = selected_task(context)
+    lowered = token.casefold()
+
+    if contest is None:
+        for item in _contest_candidates(context):
+            org = item.get("organizationSlug") or item.get("organization")
+            comp = item.get("competitionSlug") or item.get("slug")
+            if f"{org}/{comp}".casefold() == lowered:
+                set_contest(item)
+                return True
+        return False
+
+    if task is None:
+        items = cached_items("tasks", f"{contest[0]}/{contest[1]}")
+        match = next(
+            (item for item in items if str(item.get("id", "")).casefold() == lowered),
+            None,
+        )
+    else:
+        items = cached_items("submissions", f"{contest[0]}/{contest[1]}/{task}")
+        match = next(
+            (item for item in items if str(item.get("id", "")).casefold() == lowered),
+            None,
+        )
+        if match is None:
+            match = next(
+                (
+                    item
+                    for item in items
+                    if str(item.get("id", "")).split("-")[-1].casefold() == lowered
+                ),
+                None,
+            )
+    if match is None:
+        return False
+    if task is None:
+        set_task(match)
+    else:
+        set_submission(match)
+    return True
+
+
 def _safe_dispatch(dispatch: Dispatch, words: list[str]) -> int:
     try:
         return dispatch(words)
@@ -217,8 +262,9 @@ def run_shell(dispatch: Dispatch) -> int:
             if command in {"..", "back", "unselect"}:
                 _back()
                 continue
-            if len(words) == 1 and _numeric_select(words[0]):
-                continue
+            if len(words) == 1 and command not in COMMANDS:
+                if _entity_select(words[0]) or _numeric_select(words[0]):
+                    continue
             _safe_dispatch(dispatch, words)
     finally:
         save_shell_history()
