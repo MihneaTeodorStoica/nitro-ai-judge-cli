@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import readline
 import shlex
 from typing import Any, Callable
@@ -41,12 +40,14 @@ def shell_prompt(context: dict[str, Any] | None = None) -> str:
 def shell_help() -> None:
     print(
         """Commands:
-  help [COMMAND]       Show shell or command help
-  ls                   List contests, tasks, or submissions for the context
-  use [ORG/COMP [TASK] | TASK]
+  help | h | ? [COMMAND]
+                       Show shell or command help
+  ls | l               List contests, tasks, or submissions for the context
+  use | cd [ORG/COMP [TASK] | TASK]
                        Show or change the persistent context
+  cd .. | ..           Move one context level up
   show                 Show the selected contest, task, or submission
-  ..                   Move one context level up
+  pwd                  Print the complete current selection
   NUMBER               Select a cached contest, task, or submission
   q | quit | exit      Exit the shell
 
@@ -61,7 +62,7 @@ def setup_readline() -> None:
     except (FileNotFoundError, OSError):
         pass
 
-    readline.set_completer_delims(readline.get_completer_delims().replace("/", ""))
+    readline.set_completer_delims(" \t\n")
     cache: list[str] = []
 
     def completer(text: str, state: int) -> str | None:
@@ -77,8 +78,50 @@ def setup_readline() -> None:
         return cache[state] if state < len(cache) else None
 
     readline.set_completer(completer)
-    readline.parse_and_bind("tab: menu-complete")
-    readline.parse_and_bind('"\\e[Z": menu-complete-backward')
+    bindings: tuple[str, ...]
+    if "libedit" in (readline.__doc__ or ""):
+        bindings = (
+            "bind ^I rl_complete",
+            "bind ^L ed-clear-screen",
+            "bind ^R em-inc-search-prev",
+            "bind ^P ed-prev-history",
+            "bind ^N ed-next-history",
+            "bind -k up ed-prev-history",
+            "bind -k down ed-next-history",
+            "bind ^A ed-move-to-beg",
+            "bind ^E ed-move-to-end",
+            "bind ^W ed-delete-prev-word",
+            "bind ^U ed-kill-line",
+            "bind ^K ed-kill-line",
+            'bind "\\e[1;5D" ed-prev-word',
+            'bind "\\e[1;5C" em-next-word',
+        )
+    else:
+        bindings = (
+            "tab: menu-complete",
+            '"\\e[Z": menu-complete-backward',
+            "Control-l: clear-screen",
+            "Control-r: reverse-search-history",
+            "Control-p: previous-history",
+            "Control-n: next-history",
+            '"\\e[A": previous-history',
+            '"\\e[B": next-history',
+            '"\\eOA": previous-history',
+            '"\\eOB": next-history',
+            "Control-a: beginning-of-line",
+            "Control-e: end-of-line",
+            "Control-w: unix-word-rubout",
+            "Control-u: unix-line-discard",
+            "Control-k: kill-line",
+            '"\\e[H": beginning-of-line',
+            '"\\e[F": end-of-line',
+            '"\\eOH": beginning-of-line',
+            '"\\eOF": end-of-line',
+            '"\\e[1;5D": backward-word',
+            '"\\e[1;5C": forward-word',
+        )
+    for binding in bindings:
+        readline.parse_and_bind(binding)
 
 
 def save_shell_history() -> None:
@@ -253,15 +296,35 @@ def run_shell(dispatch: Dispatch) -> int:
             command = words[0].casefold()
             if command in {"q", "quit", "exit"}:
                 return 0
-            if command == "help" and len(words) == 1:
+            if command in {"help", "h", "?"} and len(words) == 1:
                 shell_help()
                 continue
-            if command == "help":
-                _safe_dispatch(dispatch, [words[1], "--help"])
+            if command in {"help", "h", "?"}:
+                target = {"cd": "use", "l": "ls"}.get(
+                    words[1].casefold(), words[1]
+                )
+                if target.casefold() in {
+                    "help", "h", "?", "pwd", "q", "quit", "exit", "..",
+                    "back", "unselect",
+                }:
+                    shell_help()
+                else:
+                    _safe_dispatch(dispatch, [target, "--help"])
                 continue
-            if command in {"..", "back", "unselect"}:
+            if command in {"..", "back", "unselect"} or (
+                command == "cd" and words[1:] == [".."]
+            ):
                 _back()
                 continue
+            if command == "cd":
+                words = ["use", *words[1:]]
+                command = "use"
+            elif command == "l":
+                words = ["ls", *words[1:]]
+                command = "ls"
+            elif command == "pwd":
+                words = ["use"]
+                command = "use"
             if len(words) == 1 and command not in COMMANDS:
                 if _entity_select(words[0]) or _numeric_select(words[0]):
                     continue

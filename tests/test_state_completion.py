@@ -338,8 +338,154 @@ class CompletionTests(unittest.TestCase):
         context = self.context()
         context["task"] = None
         context["cache"]["tasks"]["Acme/Open"].append({"id": "TASKS"})
-        values = completion.candidates([""], context, interactive=True)
+        values = completion.candidates(["ta"], context, interactive=True)
         self.assertEqual([value for value in values if value.casefold() == "tasks"], ["tasks"])
+
+    def test_interactive_root_is_local_only_until_a_prefix_is_typed(self) -> None:
+        context = self.context()
+        context.pop("submission", None)
+        self.assertEqual(
+            completion.candidates([""], context, interactive=True),
+            ["123", "456", "ABC-123", "def-456"],
+        )
+        self.assertEqual(
+            completion.candidates(["c"], context, interactive=True),
+            ["cd", "completion", "contests"],
+        )
+
+    def test_use_resolves_the_current_argument_slot(self) -> None:
+        context = self.context()
+        self.assertEqual(
+            completion.candidates(["use", ""], context), ["2", "TaskOne"]
+        )
+        self.assertEqual(
+            completion.candidates(["cd", ""], context, interactive=True),
+            ["2", "TaskOne"],
+        )
+        self.assertEqual(
+            completion.candidates(["use", "b"], context), ["Beta/Cup"]
+        )
+        self.assertEqual(
+            completion.candidates(["use", "Beta/Cup", ""], context), []
+        )
+
+    def test_completed_contest_suggests_exactly_its_tasks(self) -> None:
+        context = self.context()
+        contest = "ceoai/ceoai-2026-day-1"
+        context["cache"]["contests"]["all"].append(
+            {
+                "organizationSlug": "ceoai",
+                "competitionSlug": "ceoai-2026-day-1",
+            }
+        )
+        context["cache"]["tasks"][contest] = [
+            {"id": "3"}, {"id": "4"}, {"id": "6"},
+        ]
+        self.assertEqual(
+            completion.candidates(["use", contest, ""], context), ["3", "4", "6"]
+        )
+        for command in ("task", "submit", "download-data", "submissions"):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    completion.candidates([command, contest, ""], context),
+                    ["3", "4", "6"],
+                )
+
+    def test_task_slots_distinguish_inherited_and_explicit_targets(self) -> None:
+        context = self.context()
+        inherited = completion.candidates(["submit", ""], context)
+        self.assertIn("--output", inherited)
+        self.assertNotIn("TaskOne", inherited)
+        self.assertEqual(
+            completion.candidates(["submit", "task"], context), ["TaskOne"]
+        )
+        self.assertIn(
+            "--output", completion.candidates(["submit", "TaskOne", ""], context)
+        )
+
+        context.pop("task", None)
+        context.pop("submission", None)
+        self.assertEqual(
+            completion.candidates(["submit", ""], context), ["2", "TaskOne"]
+        )
+        self.assertNotIn(
+            "TaskOne", completion.candidates(["submit", "-"], context)
+        )
+
+        context.pop("contest", None)
+        self.assertEqual(
+            completion.candidates(["task", ""], context),
+            ["Acme/Open", "Beta/Cup"],
+        )
+
+    def test_tasks_and_submission_slots_advance_one_level_at_a_time(self) -> None:
+        context = self.context()
+        self.assertEqual(completion.candidates(["tasks", ""], context), ["--help"])
+        self.assertEqual(
+            completion.candidates(["tasks", "b"], context), ["Beta/Cup"]
+        )
+
+        context.pop("submission", None)
+        expected = ["123", "456", "ABC-123", "def-456"]
+        self.assertEqual(completion.candidates(["submission", ""], context), expected)
+        self.assertEqual(completion.candidates(["set-final", ""], context), expected)
+        self.assertEqual(
+            completion.candidates(["submission", "abc"], context), ["ABC-123"]
+        )
+        self.assertIn(
+            "--org", completion.candidates(["submission", "ABC-123", ""], context)
+        )
+
+    def test_used_options_and_repeatable_categories_are_filtered(self) -> None:
+        context = self.context()
+        values = completion.candidates(
+            ["submit", "TaskOne", "-o", "result.csv", ""], context
+        )
+        self.assertNotIn("-o", values)
+        self.assertNotIn("--output", values)
+        self.assertIn("--source", values)
+
+        categories = completion.candidates(
+            ["download-data", "TaskOne", "-c", "statement", "-c", ""],
+            context,
+        )
+        self.assertNotIn("statement", categories)
+        self.assertIn("train_data", categories)
+        remaining = completion.candidates(
+            ["download-data", "TaskOne", "-c", "statement", ""], context
+        )
+        self.assertIn("-c", remaining)
+        self.assertIn("--category", remaining)
+
+        values = completion.candidates(
+            ["submissions", "TaskOne", "-m", "both", ""], context
+        )
+        self.assertNotIn("-m", values)
+        self.assertNotIn("--mode", values)
+        self.assertEqual(completion.candidates(["login", "--username", ""], context), [])
+        self.assertNotIn(
+            "always", completion.candidates(["play", "logs", "--pull", ""], context)
+        )
+
+    def test_play_completion_is_action_specific(self) -> None:
+        context = self.context()
+        self.assertEqual(
+            completion.candidates(["play", ""], context), list(completion.PLAY_ACTIONS)
+        )
+        self.assertEqual(
+            completion.candidates(["play", "logs", ""], context),
+            ["--follow", "--help", "-f"],
+        )
+        self.assertEqual(
+            completion.candidates(["play", "logs", "--follow", ""], context),
+            ["--help"],
+        )
+        down = completion.candidates(["play", "down", ""], context)
+        self.assertIn("--volumes", down)
+        self.assertNotIn("--gpu", down)
+        up = completion.candidates(["play", "Acme/Open", ""], context)
+        self.assertIn("--gpu", up)
+        self.assertNotIn("--follow", up)
 
     def test_completion_with_supplied_context_performs_no_state_or_network_io(self) -> None:
         context = self.context()
@@ -442,7 +588,7 @@ class CompletionTests(unittest.TestCase):
                 second = completion.candidates([""], interactive=True)
 
         self.assertEqual(output.getvalue(), "")
-        self.assertIn("contests", first)
+        self.assertEqual(first, [])
         self.assertEqual(first, second)
         self.assertEqual(loader.call_count, 2)
         self.assertNotIn("all", state.load_context().get("cache", {}).get("contests", {}))
@@ -483,6 +629,8 @@ class CompletionTests(unittest.TestCase):
                 self.assertIn("nitro-cli", generated)
                 self.assertIn("naij __complete", generated)
                 self.assertNotIn("nitro-cli __complete", generated)
+        self.assertIn('"${words[@]:1}"', completion.script("zsh"))
+        self.assertIn("commandline -ct", completion.script("fish"))
 
     def test_unknown_completion_shell_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported shell"):

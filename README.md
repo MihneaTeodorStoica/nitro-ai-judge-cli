@@ -209,13 +209,15 @@ Nitro AI Judge Interactive Shell. Type `help` for commands.
 
 Shell conveniences:
 
-- `ls`, `use`, and `show` have the same context-sensitive behavior as direct commands.
-- `..`, `back`, and `unselect` move up one selection level.
+- `cd` is a shell-only alias for `use`; `cd ..`, `..`, `back`, and `unselect` move up one selection level.
+- `pwd` prints the full current selection, `l` aliases `ls`, and `h` or `?` aliases `help` (including `h COMMAND`).
+- `ls`, `use`, and `show` retain the same context-sensitive behavior as direct commands. Shell aliases are not top-level `naij` commands.
 - A completed contest, task, or submission selects it directly; bare numbers remain available for indexed navigation.
 - `help COMMAND` displays command-specific help.
 - All regular commands work without a leading `naij`.
-- Tab cycles completion forward and Shift-Tab cycles backward.
+- Tab completes the current word; press it twice to list ambiguous matches. GNU Readline also supports forward/backward cycling with Tab/Shift-Tab.
 - Completion is case-insensitive and slash-aware, and covers commands, options, enum values, competitions/tasks/submissions, and filesystem paths.
+- Up/Down and Ctrl-P/Ctrl-N navigate history, Ctrl-R searches history, and Ctrl-L clears the screen. Home/End, Ctrl-A/Ctrl-E, Ctrl-Left/Ctrl-Right, Ctrl-W, Ctrl-U, and Ctrl-K provide standard line editing in GNU Readline and libedit.
 - Ctrl-C cancels the current line, Ctrl-D exits, and invalid input returns to the prompt.
 
 ## Native completion
@@ -241,7 +243,7 @@ source <(naij completion bash)
 naij completion fish | source
 ```
 
-Completion lazily fetches a missing entity list on the first relevant Tab and saves it in the context cache. It fetches all competitions, only the selected or supplied competition's tasks, or the current user's partial and complete submissions for the selected task. Existing cache entries, including empty lists, suppress later requests; authentication and network failures stay silent and can be retried on a later Tab. Bare native completion remains command-only, while the interactive shell also offers the next entities for its current context.
+Completion resolves the current argument slot and shows only its next useful level. It does not mix options with an available contest, task, or submission; typing `-` switches immediately to remaining valid options. It lazily fetches a missing entity list on the first relevant Tab and saves it in the context cache. It fetches all competitions, only the selected or supplied competition's tasks, or the current user's partial and complete submissions for the selected task. Existing cache entries, including empty lists, suppress later requests; authentication and network failures stay silent and can be retried on a later Tab. Bare native completion remains command-only, while a blank interactive prompt offers only entities at the current context level.
 
 ## State and security
 

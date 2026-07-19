@@ -446,7 +446,7 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if "play" in argv:
+    if "__complete" not in argv and "play" in argv:
         index = argv.index("play")
         argv = [*argv[: index + 1], *normalize_play_argv(argv[index + 1 :])]
     parser = build_parser()

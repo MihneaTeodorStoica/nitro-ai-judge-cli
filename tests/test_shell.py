@@ -65,6 +65,34 @@ class ShellLoopTests(unittest.TestCase):
         self.assertEqual(result, 0)
         dispatch.assert_called_once_with(["submit", "--help"])
 
+    def test_shell_shortcuts_dispatch_to_canonical_commands(self) -> None:
+        result, _, dispatch, _ = self.run_with_input(
+            ["cd task", "l", "pwd", "h cd", "q"]
+        )
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            dispatch.call_args_list,
+            [
+                unittest.mock.call(["use", "task"]),
+                unittest.mock.call(["ls"]),
+                unittest.mock.call(["use"]),
+                unittest.mock.call(["use", "--help"]),
+            ],
+        )
+
+    def test_cd_dot_dot_moves_up_without_dispatching(self) -> None:
+        with patch.object(shell, "_back") as back:
+            result, _, dispatch, _ = self.run_with_input(["cd ..", "q"])
+        self.assertEqual(result, 0)
+        back.assert_called_once_with()
+        dispatch.assert_not_called()
+
+    def test_question_mark_shows_shell_help(self) -> None:
+        result, output, dispatch, _ = self.run_with_input(["?", "q"])
+        self.assertEqual(result, 0)
+        self.assertIn("help | h | ?", output)
+        dispatch.assert_not_called()
+
 
 class ShellContextTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -158,7 +186,7 @@ class ShellContextTests(unittest.TestCase):
 
 
 class ReadlineTests(unittest.TestCase):
-    def test_readline_wires_forward_backward_and_slash_aware_completion(self) -> None:
+    def test_readline_wires_bindings_and_whole_token_completion(self) -> None:
         completer_set = Mock()
         bindings: list[str] = []
 
@@ -168,30 +196,61 @@ class ReadlineTests(unittest.TestCase):
             with patch.object(shell, "prepare_history", return_value=history), patch.object(
                 shell.readline, "read_history_file"
             ), patch.object(
-                shell.readline, "get_completer_delims", return_value=" \t/"
-            ), patch.object(
                 shell.readline, "set_completer_delims"
             ) as delimiters, patch.object(
                 shell.readline, "set_completer", completer_set
             ), patch.object(
                 shell.readline, "parse_and_bind", side_effect=bindings.append
             ), patch.object(
-                shell.readline, "get_line_buffer", return_value="use Acme/"
+                shell.readline, "get_line_buffer", return_value="use ceoai/ceoai-2026-"
             ), patch.object(
                 shell.readline, "get_begidx", return_value=len("use ")
             ), patch.object(
-                shell, "candidates", return_value=["Acme/Open"]
+                shell, "candidates", return_value=["ceoai/ceoai-2026-day-2"]
             ) as candidates:
                 shell.setup_readline()
 
                 completer = completer_set.call_args.args[0]
-                self.assertEqual(completer("Acme/", 0), "Acme/Open")
-                self.assertIsNone(completer("Acme/", 1))
+                self.assertEqual(
+                    completer("ceoai/ceoai-2026-", 0), "ceoai/ceoai-2026-day-2"
+                )
+                self.assertIsNone(completer("ceoai/ceoai-2026-", 1))
 
-        self.assertNotIn("/", delimiters.call_args.args[0])
+        delimiters.assert_called_once_with(" \t\n")
         self.assertIn("tab: menu-complete", bindings)
         self.assertIn('"\\e[Z": menu-complete-backward', bindings)
-        candidates.assert_called_once_with(["use", "Acme/"], interactive=True)
+        self.assertIn("Control-l: clear-screen", bindings)
+        self.assertIn("Control-r: reverse-search-history", bindings)
+        self.assertIn("Control-p: previous-history", bindings)
+        self.assertIn("Control-n: next-history", bindings)
+        self.assertIn('"\\e[A": previous-history', bindings)
+        self.assertIn('"\\e[B": next-history', bindings)
+        self.assertIn('"\\e[1;5D": backward-word', bindings)
+        self.assertIn('"\\e[1;5C": forward-word', bindings)
+        candidates.assert_called_once_with(
+            ["use", "ceoai/ceoai-2026-"], interactive=True
+        )
+
+    def test_libedit_binds_tab_to_completion(self) -> None:
+        with patch.object(shell.readline, "__doc__", "libedit readline"), patch.object(
+            shell, "prepare_history", return_value="missing"
+        ), patch.object(shell.readline, "read_history_file"), patch.object(
+            shell.readline, "set_completer_delims"
+        ), patch.object(
+            shell.readline, "set_completer"
+        ), patch.object(shell.readline, "parse_and_bind") as bind:
+            shell.setup_readline()
+
+        bindings = [call.args[0] for call in bind.call_args_list]
+        self.assertIn("bind ^I rl_complete", bindings)
+        self.assertIn("bind ^L ed-clear-screen", bindings)
+        self.assertIn("bind ^R em-inc-search-prev", bindings)
+        self.assertIn("bind ^P ed-prev-history", bindings)
+        self.assertIn("bind ^N ed-next-history", bindings)
+        self.assertIn("bind -k up ed-prev-history", bindings)
+        self.assertIn("bind -k down ed-next-history", bindings)
+        self.assertIn('bind "\\e[1;5D" ed-prev-word', bindings)
+        self.assertIn('bind "\\e[1;5C" em-next-word', bindings)
 
 
 if __name__ == "__main__":

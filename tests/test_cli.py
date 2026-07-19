@@ -57,6 +57,13 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(canonical[:2], legacy[:2])
         self.assertEqual(legacy[2], cli.LEGACY_WARNING + "\n")
 
+    def test_internal_play_completion_keeps_the_current_slot_unchanged(self) -> None:
+        with patch.object(cli, "completion_candidates", return_value=["up"]) as candidates:
+            result = invoke(cli.main, ["__complete", "--", "play", ""])
+
+        self.assertEqual(result, (0, "up\n", ""))
+        candidates.assert_called_once_with(["play", ""])
+
     def test_python_module_runs_canonical_help(self) -> None:
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(ROOT / "src")

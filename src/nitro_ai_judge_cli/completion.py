@@ -6,7 +6,7 @@ import os
 from typing import Any, Iterable
 
 from .config import DEFAULT_PAGE_SIZE, DEFAULT_SUBMISSION_PAGE_SIZE, TASK_FILE_CATEGORIES
-from .state import load_context, selected_contest, selected_task
+from .state import load_context, selected_contest, selected_submission, selected_task
 
 
 COMMANDS = (
@@ -14,24 +14,53 @@ COMMANDS = (
     "submissions", "submission", "set-final", "unset-final", "use", "ls",
     "show", "completion",
 )
+SHELL_COMMANDS = (
+    "help", "cd", "pwd", "l", "h", "?", "q", "quit", "exit", "..",
+    "back", "unselect",
+)
 GLOBAL_OPTIONS = ("--api-url", "--submission-proxy", "--state-dir", "--help")
-OPTIONS = {
-    "login": ("--username", "--help"),
-    "contests": ("--page", "--page-size", "--all-pages", "--all", "--help"),
-    "tasks": ("--help",),
-    "task": ("--help",),
-    "download-data": ("-c", "--category", "-d", "--out-dir", "-o", "--output", "-f", "--force", "--help"),
-    "play": ("--gpu", "--no-gpu", "--port", "--proxy-port", "--bind", "--pull", "--wait-timeout", "--volumes", "--force", "-f", "--follow", "--help"),
-    "submit": ("-o", "--output", "-s", "--source", "-n", "--note", "-w", "--wait", "--help"),
-    "submissions": ("-a", "--author", "-p", "--page", "-n", "--page-size", "-m", "--mode", "--help"),
-    "submission": ("--org", "--comp", "--task-id", "--help"),
-    "set-final": ("--help",),
-    "unset-final": ("--help",),
-    "use": ("--clear", "--help"),
-    "completion": ("--help",),
-}
 PLAY_ACTIONS = ("up", "start", "stop", "restart", "down", "logs", "ps", "status")
+OPTION_GROUPS = {
+    "login": (("--username",), ("--help",)),
+    "contests": (
+        ("--page",), ("--page-size",), ("--all-pages",), ("--all",),
+        ("--help",),
+    ),
+    "tasks": (("--help",),),
+    "task": (("--help",),),
+    "download-data": (
+        ("-c", "--category"), ("-d", "--out-dir"), ("-o", "--output"),
+        ("-f", "--force"), ("--help",),
+    ),
+    "submit": (
+        ("-o", "--output"), ("-s", "--source"), ("-n", "--note"),
+        ("-w", "--wait"), ("--help",),
+    ),
+    "submissions": (
+        ("-a", "--author"), ("-p", "--page"), ("-n", "--page-size"),
+        ("-m", "--mode"), ("--help",),
+    ),
+    "submission": (("--org",), ("--comp",), ("--task-id",), ("--help",)),
+    "set-final": (("--help",),),
+    "unset-final": (("--help",),),
+    "use": (("--clear",), ("--help",)),
+    "completion": (("--help",),),
+}
+PLAY_OPTION_GROUPS = {
+    "up": (
+        ("--gpu", "--no-gpu"), ("--port",), ("--proxy-port",),
+        ("--bind",), ("--pull",), ("--wait-timeout",), ("--help",),
+    ),
+    "down": (("--volumes",), ("--force",), ("--help",)),
+    "logs": (("-f", "--follow"), ("--help",)),
+    "start": (("--help",),),
+    "stop": (("--help",),),
+    "restart": (("--help",),),
+    "ps": (("--help",),),
+    "status": (("--help",),),
+}
 VALUE_OPTIONS = {
+    "login": {"--username"},
     "contests": {"--page", "--page-size"},
     "download-data": {"-c", "--category", "-d", "--out-dir", "-o", "--output"},
     "play": {"--port", "--proxy-port", "--bind", "--pull", "--wait-timeout"},
@@ -41,6 +70,7 @@ VALUE_OPTIONS = {
     },
     "submission": {"--org", "--comp", "--task-id"},
 }
+REPEATABLE_OPTION_GROUPS = {"download-data": {"-c"}}
 
 
 def _matches(candidates: Iterable[str], prefix: str) -> list[str]:
@@ -108,14 +138,14 @@ def _cached_tasks_for(
     return result
 
 
-def _cached_submissions(context: dict[str, Any]) -> list[str]:
-    selected = selected_contest(context)
-    task = selected_task(context)
-    if not selected or task is None:
+def _cached_submissions_for(
+    context: dict[str, Any], target: tuple[str, str, str] | None
+) -> list[str]:
+    if not target:
         return []
     cache = context.get("cache", {})
     bucket = cache.get("submissions", {}) if isinstance(cache, dict) else {}
-    items = bucket.get(f"{selected[0]}/{selected[1]}/{task}", []) if isinstance(bucket, dict) else []
+    items = bucket.get("/".join(target), []) if isinstance(bucket, dict) else []
     result = []
     for item in items if isinstance(items, list) else []:
         if isinstance(item, dict) and item.get("id"):
@@ -147,62 +177,191 @@ def _positionals(command: str, words: list[str]) -> list[str]:
     return result
 
 
-def _explicit_contest(command: str, words: list[str]) -> tuple[str, str] | None:
-    positionals = _positionals(command, words)
-    for value in positionals:
-        if "/" in value:
-            org, comp = value.split("/", 1)
-            if org and comp:
-                return org, comp
-    if command != "use" and len(positionals) >= 2:
-        return positionals[0], positionals[1]
+def _contest_ref(value: str, context: dict[str, Any]) -> tuple[str, str] | None:
+    if "/" not in value:
+        return None
+    org, comp = value.split("/", 1)
+    if not org or not comp:
+        return None
+    wanted = value.casefold()
+    for candidate in _cached_contests(context):
+        if candidate.casefold() == wanted:
+            return tuple(candidate.split("/", 1))  # type: ignore[return-value]
+    return org, comp
+
+
+def _selected_submission_target(
+    context: dict[str, Any],
+) -> tuple[str, str, str] | None:
+    contest = selected_contest(context)
+    task = selected_task(context)
+    if not contest or task is None:
+        return None
+    return contest[0], contest[1], task
+
+
+def _option_groups(
+    command: str, action: str | None = None
+) -> tuple[tuple[str, ...], ...]:
+    if command == "play":
+        return PLAY_OPTION_GROUPS.get(action or "up", PLAY_OPTION_GROUPS["up"])
+    return OPTION_GROUPS.get(command, (("--help",),))
+
+
+def _remaining_options(
+    command: str, words: list[str], prefix: str, action: str | None = None
+) -> list[str]:
+    groups = _option_groups(command, action)
+    used: set[str] = set()
+    repeatable = REPEATABLE_OPTION_GROUPS.get(command, set())
+    for word in words:
+        option = word.split("=", 1)[0]
+        for group in groups:
+            if option in group and group[0] not in repeatable:
+                used.add(group[0])
+                break
+    remaining = [
+        option
+        for group in groups
+        if group[0] not in used
+        for option in group
+    ]
+    return _matches(remaining, prefix)
+
+
+def _selected_option_values(words: list[str], aliases: set[str]) -> set[str]:
+    selected: set[str] = set()
+    for index, word in enumerate(words):
+        if word in aliases and index + 1 < len(words):
+            selected.add(words[index + 1].casefold())
+        elif "=" in word and word.split("=", 1)[0] in aliases:
+            selected.add(word.split("=", 1)[1].casefold())
+    return selected
+
+
+def _value_candidates(
+    command: str, words: list[str], prefix: str, action: str | None = None
+) -> list[str] | None:
+    if not words:
+        return None
+    previous = words[-1]
+    if previous not in VALUE_OPTIONS.get(command, set()):
+        return None
+    if command == "play" and not any(
+        previous in group for group in _option_groups(command, action)
+    ):
+        return None
+    if previous in {"--category", "-c"}:
+        selected = _selected_option_values(words[:-1], {"--category", "-c"})
+        return _matches(
+            (item for item in TASK_FILE_CATEGORIES if item.casefold() not in selected),
+            prefix,
+        )
+    if previous in {"--mode", "-m"}:
+        return _matches(("partial", "complete", "both"), prefix)
+    if previous == "--pull":
+        return _matches(("always", "missing", "never"), prefix)
+    if previous in {"--output", "-o", "--source", "-s", "--out-dir", "-d"}:
+        return _filesystem(prefix)
+    if previous in VALUE_OPTIONS.get(command, set()):
+        return []
     return None
 
 
-def _cache_scope(
-    committed: list[str], prefix: str, context: dict[str, Any], interactive: bool
-) -> tuple[str, str, tuple[str, ...]] | None:
-    if prefix.startswith("-"):
-        return None
-    if not committed:
-        if not interactive:
-            return None
-        contest = selected_contest(context)
-        if not contest:
-            return "contests", "all", ()
-        task = selected_task(context)
-        if task is None:
-            return "tasks", f"{contest[0]}/{contest[1]}", contest
-        return (
-            "submissions",
-            f"{contest[0]}/{contest[1]}/{task}",
-            (contest[0], contest[1], task),
-        )
+def _entity_scope(
+    entity: tuple[str, tuple[str, ...] | None]
+) -> tuple[str, str, tuple[str, ...]]:
+    kind, target = entity
+    if kind == "contests":
+        return kind, "all", ()
+    assert target is not None
+    return kind, "/".join(target), target
 
-    command = committed[0]
-    arguments = committed[1:]
-    if arguments and (
-        arguments[-1] in VALUE_OPTIONS.get(command, set())
-        or arguments[-1].startswith("-")
-    ):
+
+def _entity_values(
+    context: dict[str, Any], entities: list[tuple[str, tuple[str, ...] | None]]
+) -> list[str]:
+    values: list[str] = []
+    for kind, target in entities:
+        if kind == "contests":
+            values.extend(_cached_contests(context))
+        elif kind == "tasks":
+            values.extend(_cached_tasks_for(context, target))  # type: ignore[arg-type]
+        else:
+            values.extend(_cached_submissions_for(context, target))  # type: ignore[arg-type]
+    return values
+
+
+def _root_entities(
+    context: dict[str, Any]
+) -> list[tuple[str, tuple[str, ...] | None]]:
+    contest = selected_contest(context)
+    if not contest:
+        return [("contests", None)]
+    task = selected_task(context)
+    if task is None:
+        return [("tasks", contest)]
+    return [("submissions", (contest[0], contest[1], task))]
+
+
+def _use_entities(
+    words: list[str], prefix: str, context: dict[str, Any]
+) -> list[tuple[str, tuple[str, ...] | None]] | None:
+    positionals = _positionals("use", words)
+    selected = selected_contest(context)
+    if not positionals:
+        if prefix:
+            result: list[tuple[str, tuple[str, ...] | None]] = []
+            if selected:
+                result.append(("tasks", selected))
+            result.append(("contests", None))
+            return result
+        return [("tasks", selected)] if selected else [("contests", None)]
+    explicit = _contest_ref(positionals[0], context)
+    if explicit and len(positionals) == 1:
+        return [("tasks", explicit)]
+    return None
+
+
+def _task_entities(
+    command: str, words: list[str], prefix: str, context: dict[str, Any]
+) -> list[tuple[str, tuple[str, ...] | None]] | None:
+    positionals = _positionals(command, words)
+    selected = selected_contest(context)
+    if positionals:
+        explicit = _contest_ref(positionals[0], context)
+        if explicit and len(positionals) == 1:
+            return [("tasks", explicit)]
         return None
-    contest = _explicit_contest(command, arguments) or selected_contest(context)
-    if command in {"tasks", "play"}:
-        return "contests", "all", ()
-    if command == "use" or command in {
-        "task", "download-data", "submit", "submissions"
-    }:
-        if contest:
-            return "tasks", f"{contest[0]}/{contest[1]}", contest
-        return "contests", "all", ()
-    if command in {"submission", "set-final", "unset-final"}:
-        task = selected_task(context)
-        if contest and task is not None:
-            return (
-                "submissions",
-                f"{contest[0]}/{contest[1]}/{task}",
-                (contest[0], contest[1], task),
-            )
+    if prefix:
+        result: list[tuple[str, tuple[str, ...] | None]] = []
+        if selected:
+            result.append(("tasks", selected))
+        result.append(("contests", None))
+        return result
+    if selected_task(context) is not None:
+        return None
+    return [("tasks", selected)] if selected else [("contests", None)]
+
+
+def _tasks_entities(
+    words: list[str], prefix: str, context: dict[str, Any]
+) -> list[tuple[str, tuple[str, ...] | None]] | None:
+    if _positionals("tasks", words):
+        return None
+    if prefix or not selected_contest(context):
+        return [("contests", None)]
+    return None
+
+
+def _submission_entities(
+    command: str, words: list[str], prefix: str, context: dict[str, Any]
+) -> list[tuple[str, tuple[str, ...] | None]] | None:
+    if _positionals(command, words):
+        return None
+    target = _selected_submission_target(context)
+    if prefix or selected_submission(context) is None:
+        return [("submissions", target)] if target else None
     return None
 
 
@@ -261,6 +420,31 @@ def _fill_cache(
         return context
 
 
+def _complete_entities(
+    context: dict[str, Any],
+    entities: list[tuple[str, tuple[str, ...] | None]],
+    prefix: str,
+    *,
+    supplied_context: bool,
+) -> list[str]:
+    if not supplied_context:
+        for entity in entities:
+            context = _fill_cache(context, _entity_scope(entity))
+    return _matches(_entity_values(context, entities), prefix)
+
+
+def _play_action(words: list[str]) -> tuple[str, list[str]]:
+    positionals = _positionals("play", words)
+    if positionals:
+        action = next(
+            (item for item in PLAY_ACTIONS if item.casefold() == positionals[0].casefold()),
+            None,
+        )
+        if action:
+            return action, positionals[1:]
+    return "up", positionals
+
+
 def candidates(
     words: list[str],
     context: dict[str, Any] | None = None,
@@ -273,67 +457,99 @@ def candidates(
     words = list(words)
     prefix = words[-1] if words else ""
     committed = words[:-1] if words else []
-    if committed and committed[-1] == "--state-dir":
-        return _filesystem(prefix)
+    global_words: list[str] = []
     while committed:
-        if committed[0] == "--submission-proxy":
-            committed.pop(0)
+        if committed[0] in {"--submission-proxy", "--help"}:
+            global_words.append(committed.pop(0))
             continue
         if committed[0] in {"--api-url", "--state-dir"}:
+            if len(committed) == 1:
+                return _filesystem(prefix) if committed[0] == "--state-dir" else []
+            global_words.extend(committed[:2])
             committed = committed[2:]
             continue
         break
-    command = committed[0] if committed else ""
-    previous = committed[-1] if committed else ""
-    if previous in {"--category", "-c"}:
-        return _matches(TASK_FILE_CATEGORIES, prefix)
-    if previous in {"--mode", "-m"}:
-        return _matches(("partial", "complete", "both"), prefix)
-    if previous == "--pull":
-        return _matches(("always", "missing", "never"), prefix)
-    if previous in {"--output", "-o", "--source", "-s", "--out-dir", "-d"}:
-        return _filesystem(prefix)
-    if not supplied_context:
-        context = _fill_cache(
-            context, _cache_scope(committed, prefix, context, interactive)
-        )
-    options = OPTIONS.get(command, ("--help",))
-    include_options = options if not prefix else ()
+
     if not committed:
-        entities: tuple[str, ...] = ()
-        if interactive:
-            contest = selected_contest(context)
-            task = selected_task(context)
-            if not contest:
-                entities = tuple(_cached_contests(context))
-            elif task is None:
-                entities = tuple(_cached_tasks_for(context, contest))
-            else:
-                entities = tuple(_cached_submissions(context))
-        return _matches((*COMMANDS, *GLOBAL_OPTIONS, *entities), prefix)
-    if command == "completion":
-        return _matches(("zsh", "bash", "fish", *include_options), prefix)
-    if command == "play" and len(committed) == 1:
-        return _matches((*PLAY_ACTIONS, *_cached_contests(context), *OPTIONS["play"]), prefix)
+        if prefix.startswith("-"):
+            remaining = [item for item in GLOBAL_OPTIONS if item not in global_words]
+            return _matches(remaining, prefix)
+        if not interactive:
+            return _matches(COMMANDS, prefix)
+        root_entities = _root_entities(context)
+        local = _complete_entities(
+            context, root_entities, prefix, supplied_context=supplied_context
+        )
+        if not prefix:
+            return local
+        return _matches((*COMMANDS, *SHELL_COMMANDS, *local), prefix)
+
+    entered_command = committed[0]
+    aliases = {"cd": "use", "l": "ls"}
+    command = aliases.get(entered_command.casefold(), entered_command.casefold())
+    arguments = committed[1:]
+    if interactive and command in {"h", "?", "help"}:
+        if _positionals(command, arguments):
+            return []
+        return _matches((*COMMANDS, *SHELL_COMMANDS), prefix)
+    if interactive and command in {"pwd", "q", "quit", "exit", "..", "back", "unselect"}:
+        return []
+    if entered_command not in COMMANDS and not (
+        interactive and entered_command.casefold() in aliases
+    ):
+        return []
+
+    action = _play_action(arguments)[0] if command == "play" else None
+    value_candidates = _value_candidates(command, arguments, prefix, action)
+    if value_candidates is not None:
+        return value_candidates
     if prefix.startswith("-"):
-        return _matches(options, prefix)
-    if command in {"tasks", "play"}:
-        return _matches((*_cached_contests(context), *include_options), prefix)
+        return _remaining_options(command, arguments, prefix, action)
+
+    if command == "completion":
+        if _positionals(command, arguments):
+            return _remaining_options(command, arguments, prefix)
+        return _matches(("zsh", "bash", "fish"), prefix)
+
+    if command == "play":
+        positionals = _positionals(command, arguments)
+        if not positionals:
+            if not prefix:
+                return list(PLAY_ACTIONS)
+            contests = _complete_entities(
+                context, [("contests", None)], prefix,
+                supplied_context=supplied_context,
+            )
+            return _matches((*PLAY_ACTIONS, *contests), prefix)
+        action, contest_words = _play_action(arguments)
+        if contest_words:
+            return _remaining_options(command, arguments, prefix, action)
+        if prefix:
+            return _complete_entities(
+                context, [("contests", None)], prefix,
+                supplied_context=supplied_context,
+            )
+        if selected_contest(context):
+            return _remaining_options(command, arguments, prefix, action)
+        return _complete_entities(
+            context, [("contests", None)], prefix,
+            supplied_context=supplied_context,
+        )
+
+    entities: list[tuple[str, tuple[str, ...] | None]] | None = None
     if command == "use":
-        contest = _explicit_contest(command, committed[1:]) or selected_contest(context)
-        return _matches(
-            (*_cached_contests(context), *_cached_tasks_for(context, contest), *include_options),
-            prefix,
+        entities = _use_entities(arguments, prefix, context)
+    elif command in {"task", "download-data", "submit", "submissions"}:
+        entities = _task_entities(command, arguments, prefix, context)
+    elif command == "tasks":
+        entities = _tasks_entities(arguments, prefix, context)
+    elif command in {"submission", "set-final", "unset-final"}:
+        entities = _submission_entities(command, arguments, prefix, context)
+    if entities is not None:
+        return _complete_entities(
+            context, entities, prefix, supplied_context=supplied_context
         )
-    if command in {"task", "download-data", "submit", "submissions"}:
-        contest = _explicit_contest(command, committed[1:]) or selected_contest(context)
-        return _matches(
-            (*_cached_contests(context), *_cached_tasks_for(context, contest), *include_options),
-            prefix,
-        )
-    if command in {"submission", "set-final", "unset-final"}:
-        return _matches((*_cached_submissions(context), *include_options), prefix)
-    return _matches(include_options, prefix)
+    return _remaining_options(command, arguments, prefix)
 
 
 def script(shell: str) -> str:
@@ -341,7 +557,7 @@ def script(shell: str) -> str:
         return """#compdef naij nitro-cli
 _naij() {
   local -a reply
-  reply=(\"${(@f)$(naij __complete -- ${words[2,-1]})}\")
+  reply=(\"${(@f)$(naij __complete -- \"${words[@]:1}\")}\")
   _describe 'NAIJ' reply
 }
 compdef _naij naij nitro-cli
@@ -354,7 +570,13 @@ compdef _naij naij nitro-cli
 complete -F _naij_complete naij nitro-cli
 """
     if shell == "fish":
-        return """complete -c naij -f -a '(naij __complete -- (commandline -opc)[2..-1])'
-complete -c nitro-cli -f -a '(naij __complete -- (commandline -opc)[2..-1])'
+        return """function __naij_complete
+  set -l tokens (commandline -opc)
+  set -l current (commandline -ct)
+  test (count $current) -eq 0; and set current ''
+  naij __complete -- $tokens[2..-1] $current
+end
+complete -c naij -f -a '(__naij_complete)'
+complete -c nitro-cli -f -a '(__naij_complete)'
 """
     raise ValueError(f"unsupported shell: {shell}")
