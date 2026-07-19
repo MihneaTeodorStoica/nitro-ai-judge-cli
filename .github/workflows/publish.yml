@@ -10,6 +10,30 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package
+        run: python -m pip install .
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
   build:
     runs-on: ubuntu-latest
     permissions:
@@ -33,6 +57,19 @@ jobs:
       - name: Check distribution metadata
         run: python -m twine check dist/*
 
+      - name: Install built wheel
+        run: python -m pip install --force-reinstall dist/*.whl
+
+      - name: Smoke-test installed commands
+        run: |
+          naij --help >/tmp/naij-help
+          nitro-cli --help >/tmp/nitro-cli-help 2>/tmp/nitro-cli-warning
+          python -m nitro_ai_judge_cli --help >/tmp/naij-module-help
+          cmp /tmp/naij-help /tmp/nitro-cli-help
+          cmp /tmp/naij-help /tmp/naij-module-help
+          test "$(cat /tmp/nitro-cli-warning)" = 'warning: `nitro-cli` is deprecated; use `naij`. It will be removed in 3.0.0.'
+          python -c "import importlib.util; assert importlib.util.find_spec('nitro_cli') is None"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -40,7 +77,7 @@ jobs:
           path: dist/
 
   publish:
-    needs: build
+    needs: [test, build]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

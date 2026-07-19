@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from nitro_ai_judge_cli import config, submissions  # noqa: E402
+
+
+class SubmissionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.runtime = config.runtime()
+
+    def tearDown(self) -> None:
+        config._runtime = self.runtime
+
+    def test_multipart_submission_uses_canonical_default_note_and_endpoint(self) -> None:
+        config._runtime = config.RuntimeConfig(config.DEFAULT_API_BASE_URL, False)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory, "answer.csv")
+            source = Path(directory, "solution.py")
+            output.write_text("id,value\n1,2\n", encoding="utf-8")
+            source.write_text("print('ok')\n", encoding="utf-8")
+            response = json.dumps({"submissionID": "submission-id"})
+            with patch.object(
+                submissions, "api_request_text", return_value=(201, response, {})
+            ) as request:
+                result = submissions.create_submission(
+                    ("cf", "session"),
+                    "token",
+                    "org",
+                    "contest",
+                    "7",
+                    str(output),
+                    str(source),
+                    "",
+                )
+
+        self.assertEqual(result["submissionID"], "submission-id")
+        kwargs = request.call_args.kwargs
+        self.assertEqual(
+            kwargs["path"], "/organization/org/competition/contest/task/7/submit"
+        )
+        self.assertEqual(kwargs["method"], "POST")
+        self.assertEqual(kwargs["bearer"], "token")
+        self.assertIn("multipart/form-data; boundary=----NAIJ", kwargs["headers"]["Content-Type"])
+        self.assertIn(b'name="note"\r\n\r\nnaij', kwargs["data"])
+        self.assertIn(b'filename="answer.csv"', kwargs["data"])
+        self.assertIn(b'filename="solution.py"', kwargs["data"])
+
+    def test_proxy_submission_uses_json_payload_and_requires_source(self) -> None:
+        config._runtime = config.RuntimeConfig("http://proxy.invalid", True)
+        with self.assertRaisesRegex(RuntimeError, "--source is required"):
+            submissions.create_submission(
+                ("", ""), "token", "org", "contest", "7", "answer.csv", None, ""
+            )
+
+        response = json.dumps({"submissionId": "id"})
+        with patch.object(
+            submissions, "api_request_text", return_value=(200, response, {})
+        ) as request:
+            submissions.create_submission(
+                ("", ""),
+                "token",
+                "org",
+                "contest",
+                "7",
+                "answer.csv",
+                "solution.py",
+                "note",
+            )
+        kwargs = request.call_args.kwargs
+        self.assertEqual(kwargs["path"], "/task/7/submit")
+        self.assertEqual(
+            json.loads(kwargs["data"]),
+            {
+                "outputPath": "answer.csv",
+                "sourceCodePath": "solution.py",
+                "note": "note",
+            },
+        )
+
+    def test_submission_list_preserves_endpoint_and_parameters(self) -> None:
+        body = json.dumps({"items": [{"id": "one"}], "lastPage": 3})
+        with patch.object(
+            submissions, "api_request_text", return_value=(200, body, {})
+        ) as request:
+            items, pages = submissions.load_submissions(
+                ("cf", "session"),
+                "token",
+                "org",
+                "contest",
+                "7",
+                author="alice",
+                page=2,
+                page_size=25,
+                mode="complete",
+            )
+        self.assertEqual(items, [{"id": "one"}])
+        self.assertEqual(pages, 3)
+        self.assertEqual(
+            request.call_args.kwargs,
+            {
+                "path": "/organization/org/competition/contest/task/7/submissions",
+                "bearer": "token",
+                "params": {
+                    "author": "alice",
+                    "page": 2,
+                    "page_size": 25,
+                    "scoring_mode": "complete",
+                },
+            },
+        )
+
+    def test_polling_returns_first_non_pending_feedback(self) -> None:
+        pending = {"id": "one", "state": "pending"}
+        complete = {"id": "one", "state": "complete"}
+        with (
+            patch.object(submissions, "load_submission", side_effect=[pending, complete]) as load,
+            patch.object(submissions.time, "sleep") as sleep,
+        ):
+            result = submissions.poll_submission_feedback(
+                ("", ""), "token", "one", interval=1, timeout=30
+            )
+        self.assertEqual(result, complete)
+        self.assertEqual(load.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_final_selection_uses_expected_action(self) -> None:
+        with patch.object(
+            submissions, "api_request_text", return_value=(200, "", {})
+        ) as request:
+            submissions.set_submission_final(("", ""), "token", "id", True)
+            submissions.set_submission_final(("", ""), "token", "id", False)
+        self.assertEqual(
+            [call.kwargs["path"] for call in request.call_args_list],
+            ["/submission/id/setFinal", "/submission/id/unsetFinal"],
+        )
+        self.assertTrue(all(call.kwargs["method"] == "POST" for call in request.call_args_list))
+
+    def test_submit_command_reports_io_errors_as_exit_one(self) -> None:
+        with (
+            patch.object(submissions, "create_submission", side_effect=OSError("missing")),
+            patch("builtins.print") as output,
+        ):
+            result = submissions.cmd_submit(
+                ("", ""), "token", "org", "contest", "7", "missing.csv", None, "", False
+            )
+        self.assertEqual(result, 1)
+        self.assertIn("missing", output.call_args.args[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

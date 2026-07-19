@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nitro-ai-judge-cli"
-version = "1.8.2"
+version = "2.0.0"
 description = "CLI client for judge.nitro-ai.org"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -31,7 +31,8 @@ Repository = "https://github.com/MihneaTeodorStoica/nitro-cli"
 Issues = "https://github.com/MihneaTeodorStoica/nitro-cli/issues"
 
 [project.scripts]
-nitro-cli = "nitro_cli:main"
+naij = "nitro_ai_judge_cli.cli:main"
+nitro-cli = "nitro_ai_judge_cli.cli:legacy_main"
 
-[tool.setuptools]
-py-modules = ["nitro_cli"]
+[tool.setuptools.packages.find]
+where = ["src"]
