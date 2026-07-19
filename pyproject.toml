@@ -26,9 +26,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/MihneaTeodorStoica/nitro-cli"
-Repository = "https://github.com/MihneaTeodorStoica/nitro-cli"
-Issues = "https://github.com/MihneaTeodorStoica/nitro-cli/issues"
+Homepage = "https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli"
+Repository = "https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli"
+Issues = "https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli/issues"
 
 [project.scripts]
 naij = "nitro_ai_judge_cli.cli:main"
