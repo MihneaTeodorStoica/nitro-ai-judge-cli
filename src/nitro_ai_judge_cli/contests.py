@@ -9,6 +9,7 @@ import os
 import threading
 import time
 import urllib.parse
+import zipfile
 from typing import Any
 
 from .api import api_request_bytes, api_request_text, body_json, error_preview, int_payload, list_payload, parse_singlefetch, request, request_text
@@ -17,6 +18,10 @@ from .state import update_cache
 from .ui import _start_spinner, _stop_spinner, format_datetime_ms
 
 COMPETITION_PAGE_WORKERS = 4
+ZIP_BOMB_MAX_FILES = 10_000
+ZIP_BOMB_MAX_UNCOMPRESSED_BYTES = 5 * 1024**3
+ZIP_BOMB_MAX_COMPRESSION_RATIO = 200
+ZIP_BOMB_RATIO_MIN_BYTES = 100 * 1024**2
 
 class TaskFileLinkParser(HTMLParser):
     def __init__(self, org: str, comp: str, task_id: str) -> None:
@@ -580,6 +585,50 @@ def write_task_file(
         f.write(body)
     return target
 
+def extract_task_archive(
+    path: str, *, force: bool = False
+) -> tuple[str | None, str | None]:
+    if not path.lower().endswith(".zip") or not zipfile.is_zipfile(path):
+        return None, None
+
+    output_dir = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            total_size = sum(member.file_size for member in members)
+            compressed_size = sum(member.compress_size for member in members)
+            ratio = total_size / max(compressed_size, 1)
+            reasons = []
+            if len(members) > ZIP_BOMB_MAX_FILES:
+                reasons.append(f"{len(members)} files")
+            if total_size > ZIP_BOMB_MAX_UNCOMPRESSED_BYTES:
+                reasons.append(f"{total_size} uncompressed bytes")
+            if (
+                total_size >= ZIP_BOMB_RATIO_MIN_BYTES
+                and ratio > ZIP_BOMB_MAX_COMPRESSION_RATIO
+            ):
+                reasons.append(f"{ratio:.0f}x compression ratio")
+            if reasons:
+                return None, (
+                    f"Possible zip bomb detected in {path} ({', '.join(reasons)}); "
+                    "automatic extraction skipped and archive kept"
+                )
+
+            for member in members:
+                target = os.path.realpath(os.path.join(output_dir, member.filename))
+                if os.path.commonpath((output_dir, target)) != output_dir:
+                    raise RuntimeError(
+                        f"Refusing to extract unsafe archive path: {member.filename}"
+                    )
+                if os.path.lexists(target) and not member.is_dir() and not force:
+                    raise RuntimeError(f"Refusing to overwrite existing file: {target}")
+            archive.extractall(output_dir)
+    except zipfile.BadZipFile as e:
+        raise RuntimeError(f"Could not extract archive: {path}") from e
+
+    os.remove(path)
+    return output_dir, None
+
 def download_task_data(
     cookies: tuple[str, str],
     bearer: str,
@@ -632,7 +681,17 @@ def download_task_data(
                 output_dir,
                 force=force,
             )
-            results.append({"category": category, "path": path, "bytes": len(body)})
+            extracted_to, warning = extract_task_archive(path, force=force)
+            result = {
+                "category": category,
+                "path": extracted_to or path,
+                "bytes": len(body),
+            }
+            if extracted_to:
+                result["extracted"] = True
+            if warning:
+                result["warning"] = warning
+            results.append(result)
         finally:
             if spinner_stop is not None and spinner_thread is not None:
                 _stop_spinner(spinner_stop, spinner_thread)
@@ -669,7 +728,10 @@ def cmd_download_data(
         return 1
 
     for result in results:
+        if result.get("warning"):
+            print(f"Warning: {result['warning']}")
+        action = "Downloaded and extracted" if result.get("extracted") else "Downloaded"
         print(
-            f"Downloaded {result['category']} -> {result['path']} ({result['bytes']} bytes)"
+            f"{action} {result['category']} -> {result['path']} ({result['bytes']} bytes)"
         )
     return 0

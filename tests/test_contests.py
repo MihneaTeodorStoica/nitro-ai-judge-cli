@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -301,6 +302,83 @@ class TaskFileTests(unittest.TestCase):
             )
             stop_spinner.assert_called_once_with(stop, thread)
 
+    def test_download_data_extracts_zip_and_removes_archive(self) -> None:
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as zipped:
+            zipped.writestr("train/data.csv", "value\n1\n")
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(contests, "load_task_file_links", return_value={}),
+                patch.object(
+                    contests,
+                    "download_task_file",
+                    return_value=(
+                        200,
+                        archive.getvalue(),
+                        {"Content-Disposition": 'attachment; filename="training.zip"'},
+                    ),
+                ),
+                patch.object(contests, "_start_spinner", return_value=(object(), object())),
+                patch.object(contests, "_stop_spinner"),
+            ):
+                result = contests.download_task_data(
+                    COOKIES,
+                    BEARER,
+                    "org",
+                    "contest",
+                    "7",
+                    categories=["train_data"],
+                    output_dir=directory,
+                )
+
+            self.assertEqual(Path(directory, "train/data.csv").read_text(), "value\n1\n")
+            self.assertFalse(Path(directory, "training.zip").exists())
+            self.assertEqual(
+                result,
+                [{
+                    "category": "train_data",
+                    "path": str(Path(directory).resolve()),
+                    "bytes": len(archive.getvalue()),
+                    "extracted": True,
+                }],
+            )
+
+    def test_possible_zip_bomb_is_kept_and_warned_about(self) -> None:
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+            zipped.writestr("large.csv", b"0" * 2048)
+
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(contests, "load_task_file_links", return_value={}),
+                patch.object(
+                    contests,
+                    "download_task_file",
+                    return_value=(
+                        200,
+                        archive.getvalue(),
+                        {"Content-Disposition": 'attachment; filename="training.zip"'},
+                    ),
+                ),
+                patch.object(contests, "ZIP_BOMB_MAX_UNCOMPRESSED_BYTES", 1024),
+                patch.object(contests, "_start_spinner", return_value=(object(), object())),
+                patch.object(contests, "_stop_spinner"),
+            ):
+                result = contests.download_task_data(
+                    COOKIES,
+                    BEARER,
+                    "org",
+                    "contest",
+                    "7",
+                    categories=["train_data"],
+                    output_dir=directory,
+                )
+
+            self.assertTrue(Path(directory, "training.zip").exists())
+            self.assertFalse(Path(directory, "large.csv").exists())
+            self.assertIn("Possible zip bomb detected", result[0]["warning"])
+
     def test_output_constraints_and_overwrite_protection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory, "result.csv")
@@ -406,6 +484,35 @@ class CommandExitTests(unittest.TestCase):
             output.getvalue().strip(),
             "Downloaded train_data -> data.csv (12 bytes)",
         )
+
+    def test_download_command_prints_zip_bomb_warning(self) -> None:
+        output = io.StringIO()
+        with (
+            patch.object(
+                contests,
+                "download_task_data",
+                return_value=[{
+                    "category": "train_data",
+                    "path": "data.zip",
+                    "bytes": 12,
+                    "warning": "Possible zip bomb detected; archive kept",
+                }],
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            result = contests.cmd_download_data(
+                COOKIES,
+                BEARER,
+                "org",
+                "contest",
+                "7",
+                categories=["train_data"],
+                output_dir=".",
+                output_path=None,
+                force=False,
+            )
+        self.assertEqual(result, 0)
+        self.assertIn("Warning: Possible zip bomb detected", output.getvalue())
 
 
 if __name__ == "__main__":
