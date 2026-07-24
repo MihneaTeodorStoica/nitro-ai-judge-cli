@@ -234,17 +234,33 @@ class ContextDispatchTests(unittest.TestCase):
 
     def test_use_task_only_keeps_selected_contest(self) -> None:
         state.set_contest({"organizationSlug": "org", "competitionSlug": "contest"})
-        tasks = [{"id": "1", "title": "First"}, {"id": "2", "title": "Second"}]
+        tasks = [{"id": "3", "title": "First"}, {"id": "4", "title": "Second"}]
+        stdout = io.StringIO()
 
         with patch.object(cli, "require_auth", return_value=({}, ("", ""), "token")):
             with patch.object(cli, "load_tasks", return_value=tasks):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    result = cli.main(["use", "second"])
+                with contextlib.redirect_stdout(stdout):
+                    result = cli.main(["use", "2"])
 
         context = state.load_context()
         self.assertEqual(result, 0)
         self.assertEqual(state.selected_contest(context), ("org", "contest"))
-        self.assertEqual(state.selected_task(context), "2")
+        self.assertEqual(state.selected_task(context), "4")
+        self.assertIn("Task: 2 (Second)", stdout.getvalue())
+
+    def test_explicit_task_number_resolves_to_backend_id(self) -> None:
+        tasks = [{"id": "3"}, {"id": "4"}, {"id": "6"}]
+        auth = ({}, ("", ""), "token")
+        with patch.object(cli, "require_auth", return_value=auth), patch.object(
+            cli, "load_tasks", return_value=tasks
+        ), patch.object(cli, "cmd_task", return_value=0) as command:
+            self.assertEqual(
+                cli.main(["task", "ceoai/ceoai-2026-day-1", "3"]), 0
+            )
+
+        command.assert_called_once_with(
+            ("", ""), "token", "ceoai", "ceoai-2026-day-1", "6", display_id="3"
+        )
 
     def test_failed_use_does_not_change_existing_selection(self) -> None:
         state.set_contest({"organizationSlug": "old", "competitionSlug": "contest"})

@@ -18,8 +18,10 @@ from .contests import (
     cmd_download_data,
     cmd_task,
     cmd_tasks,
+    find_task,
     load_tasks,
     print_competitions,
+    task_number,
 )
 from .play import PLAY_ACTIONS, add_play_parser, cmd_play, normalize_play_argv
 from .shell import run_shell
@@ -31,6 +33,7 @@ from .state import (
     selected_contest,
     selected_submission,
     selected_task,
+    selected_task_number,
     set_contest,
     set_task,
     update_cache,
@@ -111,6 +114,22 @@ def _resolve_task_target(
     raise ValueError("expected [<org>/<comp> | <org> <comp>] [task]")
 
 
+def _resolve_task_reference(
+    cookies: tuple[str, str],
+    bearer: str,
+    org: str,
+    comp: str,
+    reference: str,
+) -> tuple[str, str]:
+    tasks = load_tasks(cookies, bearer, org, comp)
+    task = find_task(tasks, reference)
+    if task is None or task.get("id") is None:
+        raise RuntimeError(f"task {reference!r} was not found in {org}/{comp}")
+    update_cache("tasks", f"{org}/{comp}", tasks)
+    task_id = str(task["id"])
+    return task_id, task_number(tasks, task_id)
+
+
 def _context_error(error: ValueError) -> int:
     print(f"Error: {error}")
     return 1
@@ -126,20 +145,9 @@ def _show_context(context: dict[str, Any]) -> int:
     else:
         task_data = context.get("task")
         title = task_data.get("title") if isinstance(task_data, dict) else None
-        print(f"Task: {task}{f' ({title})' if title else ''}")
+        print(f"Task: {selected_task_number(context)}{f' ({title})' if title else ''}")
     print(f"Submission: {submission}" if submission else "Submission: (none)")
     return 0
-
-
-def _find_task(tasks: list[dict[str, Any]], token: str) -> dict[str, Any] | None:
-    lowered = token.casefold()
-    for task in tasks:
-        if str(task.get("id", "")).casefold() == lowered:
-            return task
-    for task in tasks:
-        if str(task.get("title", "")).casefold() == lowered:
-            return task
-    return None
 
 
 def _cmd_use(args: argparse.Namespace) -> int:
@@ -184,7 +192,7 @@ def _cmd_use(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         print(f"Error: could not select {org}/{comp}: {exc}")
         return 1
-    task = _find_task(tasks, task_token) if task_token is not None else None
+    task = find_task(tasks, task_token) if task_token is not None else None
     if task_token is not None and task is None:
         print(f"Error: task {task_token!r} was not found in {org}/{comp}")
         return 1
@@ -337,8 +345,22 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
             org, comp, task_id, inherited = _resolve_task_target(args.targets, context)
         except ValueError as exc:
             return _context_error(exc)
+        display_task_id = selected_task_number(context) or task_id
+        if not inherited:
+            try:
+                task_id, display_task_id = _resolve_task_reference(
+                    cookies, bearer, org, comp, task_id
+                )
+            except RuntimeError as exc:
+                print(f"Error: {exc}")
+                return 1
         if args.cmd == "task":
-            result = cmd_task(cookies, bearer, org, comp, task_id)
+            display = (
+                {"display_id": display_task_id}
+                if display_task_id != task_id
+                else {}
+            )
+            result = cmd_task(cookies, bearer, org, comp, task_id, **display)
         elif args.cmd == "download-data":
             result = cmd_download_data(
                 cookies, bearer, org, comp, task_id,
@@ -431,7 +453,20 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
                 print("Hint: refresh the selection with `naij use`.")
             return result
         if contest and task_id is not None:
-            result = cmd_task(cookies, bearer, contest[0], contest[1], task_id)
+            display_task_id = selected_task_number(context)
+            display = (
+                {"display_id": display_task_id}
+                if display_task_id is not None and display_task_id != task_id
+                else {}
+            )
+            result = cmd_task(
+                cookies,
+                bearer,
+                contest[0],
+                contest[1],
+                task_id,
+                **display,
+            )
             if result:
                 print("Hint: refresh the selection with `naij use`.")
             return result

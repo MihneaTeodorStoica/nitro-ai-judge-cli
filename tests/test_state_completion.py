@@ -327,7 +327,7 @@ class CompletionTests(unittest.TestCase):
     def test_cached_completion_is_case_insensitive_and_slash_aware(self) -> None:
         context = self.context()
         self.assertEqual(completion.candidates(["use", "ACME/"] , context), ["Acme/Open"])
-        self.assertIn("TaskOne", completion.candidates(["submit", "task"], context))
+        self.assertIn("1", completion.candidates(["submit", "1"], context))
         self.assertIn("ABC-123", completion.candidates(["submission", "abc"], context))
         self.assertEqual(
             completion.candidates(["submissions", "--mode", "COMP"], context),
@@ -356,11 +356,10 @@ class CompletionTests(unittest.TestCase):
     def test_use_resolves_the_current_argument_slot(self) -> None:
         context = self.context()
         self.assertEqual(
-            completion.candidates(["use", ""], context), ["2", "TaskOne"]
+            completion.candidates(["use", ""], context), ["1", "2"]
         )
         self.assertEqual(
-            completion.candidates(["cd", ""], context, interactive=True),
-            ["2", "TaskOne"],
+            completion.candidates(["cd", ""], context, interactive=True), ["1", "2"]
         )
         self.assertEqual(
             completion.candidates(["use", "b"], context), ["Beta/Cup"]
@@ -382,35 +381,31 @@ class CompletionTests(unittest.TestCase):
             {"id": "3"}, {"id": "4"}, {"id": "6"},
         ]
         self.assertEqual(
-            completion.candidates(["use", contest, ""], context), ["3", "4", "6"]
+            completion.candidates(["use", contest, ""], context), ["1", "2", "3"]
         )
         for command in ("task", "submit", "download-data", "submissions"):
             with self.subTest(command=command):
                 self.assertEqual(
                     completion.candidates([command, contest, ""], context),
-                    ["3", "4", "6"],
+                    ["1", "2", "3"],
                 )
 
     def test_task_slots_distinguish_inherited_and_explicit_targets(self) -> None:
         context = self.context()
         inherited = completion.candidates(["submit", ""], context)
         self.assertIn("--output", inherited)
-        self.assertNotIn("TaskOne", inherited)
-        self.assertEqual(
-            completion.candidates(["submit", "task"], context), ["TaskOne"]
-        )
+        self.assertNotIn("1", inherited)
+        self.assertEqual(completion.candidates(["submit", "1"], context), ["1"])
         self.assertIn(
-            "--output", completion.candidates(["submit", "TaskOne", ""], context)
+            "--output", completion.candidates(["submit", "1", ""], context)
         )
 
         context.pop("task", None)
         context.pop("submission", None)
         self.assertEqual(
-            completion.candidates(["submit", ""], context), ["2", "TaskOne"]
+            completion.candidates(["submit", ""], context), ["1", "2"]
         )
-        self.assertNotIn(
-            "TaskOne", completion.candidates(["submit", "-"], context)
-        )
+        self.assertNotIn("1", completion.candidates(["submit", "-"], context))
 
         context.pop("contest", None)
         self.assertEqual(
@@ -541,7 +536,7 @@ class CompletionTests(unittest.TestCase):
         ) as loader:
             values = completion.candidates([""], interactive=True)
 
-        self.assertIn("forecast", values)
+        self.assertIn("1", values)
         loader.assert_called_once_with(("cf", "session"), "token", "ceoai", "2026")
         self.assertEqual(state.cached_items("tasks", "ceoai/2026"), tasks)
 
@@ -599,9 +594,9 @@ class CompletionTests(unittest.TestCase):
         with auth_state, fresh, auth, patch.object(
             contests, "load_tasks", return_value=tasks
         ) as loader:
-            values = completion.candidates(["submit", "ceoai/2026", "v"])
+            values = completion.candidates(["submit", "ceoai/2026", ""])
 
-        self.assertEqual(values, ["vision"])
+        self.assertEqual(values, ["1"])
         loader.assert_called_once_with(("cf", "session"), "token", "ceoai", "2026")
 
     def test_path_completion_is_local_and_case_insensitive(self) -> None:

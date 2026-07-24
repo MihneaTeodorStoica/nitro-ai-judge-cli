@@ -131,11 +131,11 @@ def _cached_tasks_for(
     cache = context.get("cache", {})
     bucket = cache.get("tasks", {}) if isinstance(cache, dict) else {}
     items = bucket.get(f"{contest[0]}/{contest[1]}", []) if isinstance(bucket, dict) else []
-    result = []
-    for item in items if isinstance(items, list) else []:
-        if isinstance(item, dict) and item.get("id") is not None:
-            result.append(str(item["id"]))
-    return result
+    return [
+        str(number)
+        for number, item in enumerate(items if isinstance(items, list) else [], 1)
+        if isinstance(item, dict) and item.get("id") is not None
+    ]
 
 
 def _cached_submissions_for(

@@ -416,13 +416,15 @@ class CommandExitTests(unittest.TestCase):
             self.assertEqual(contests.cmd_contests(COOKIES, BEARER, 1, 20, True), 0)
         cache.assert_called_once_with("contests", "featured", [competition])
 
+        output = io.StringIO()
         with (
             patch.object(contests, "load_tasks", return_value=[task]),
             patch.object(contests, "update_cache") as cache,
-            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stdout(output),
         ):
             self.assertEqual(contests.cmd_tasks(COOKIES, BEARER, "org", "contest"), 0)
         cache.assert_called_once_with("tasks", "org/contest", [task])
+        self.assertEqual(output.getvalue().strip(), "[1] Task")
 
     def test_task_and_download_commands_return_one_on_domain_errors(self) -> None:
         output = io.StringIO()

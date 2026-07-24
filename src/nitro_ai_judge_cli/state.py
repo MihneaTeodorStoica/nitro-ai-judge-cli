@@ -247,6 +247,21 @@ def selected_task(context: dict[str, Any] | None = None) -> str | None:
     return None
 
 
+def selected_task_number(context: dict[str, Any] | None = None) -> str | None:
+    context = load_context() if context is None else context
+    task_id = selected_task(context)
+    contest = selected_contest(context)
+    if task_id is None or contest is None:
+        return task_id
+    cache = context.get("cache", {})
+    bucket = cache.get("tasks", {}) if isinstance(cache, dict) else {}
+    items = bucket.get(f"{contest[0]}/{contest[1]}", []) if isinstance(bucket, dict) else []
+    for number, item in enumerate(items if isinstance(items, list) else [], 1):
+        if isinstance(item, dict) and str(item.get("id")) == task_id:
+            return str(number)
+    return task_id
+
+
 def selected_submission(context: dict[str, Any] | None = None) -> str | None:
     submission = (load_context() if context is None else context).get("submission")
     if isinstance(submission, dict) and submission.get("id"):

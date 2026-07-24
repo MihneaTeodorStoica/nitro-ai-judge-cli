@@ -379,12 +379,29 @@ def load_tasks(
         raise RuntimeError("Could not parse response")
     return task_list
 
+def find_task(tasks: list[dict[str, Any]], token: str) -> dict[str, Any] | None:
+    if token.isdigit() and 1 <= int(token) <= len(tasks):
+        return tasks[int(token) - 1]
+    lowered = token.casefold()
+    for task in tasks:
+        if str(task.get("id", "")).casefold() == lowered:
+            return task
+    for task in tasks:
+        if str(task.get("title", "")).casefold() == lowered:
+            return task
+    return None
+
+def task_number(tasks: list[dict[str, Any]], task_id: str) -> str:
+    for number, task in enumerate(tasks, 1):
+        if str(task.get("id")) == str(task_id):
+            return str(number)
+    return str(task_id)
+
 def print_tasks(tasks: list[dict[str, Any]]) -> None:
     if not tasks:
         print("No tasks found")
         return
-    for task in tasks:
-        task_id = task.get("id") or "?"
+    for task_id, task in enumerate(tasks, 1):
         title = task.get("title") or "?"
         print(f"[{task_id}] {title}")
         synopsis = task.get("synopsis")
@@ -453,14 +470,19 @@ def print_task(task_id: str, task: dict[str, Any]) -> None:
                 print(f"  [{index}] {title} -- max: {max_score}")
 
 def cmd_task(
-    cookies: tuple[str, str], bearer: str, org: str, comp: str, task_id: str
+    cookies: tuple[str, str],
+    bearer: str,
+    org: str,
+    comp: str,
+    task_id: str,
+    display_id: str | None = None,
 ) -> int:
     try:
         payload = load_task_view(cookies, bearer, org, comp, task_id)
     except RuntimeError as e:
         print(f"Error: {e}")
         return 1
-    print_task(task_id, payload["task"])
+    print_task(display_id or task_id, payload["task"])
     return 0
 
 def load_task_file_categories(

@@ -7,6 +7,7 @@ import shlex
 from typing import Any, Callable
 
 from .completion import COMMANDS, candidates
+from .contests import find_task
 from .state import (
     atomic_write,
     cached_items,
@@ -16,6 +17,7 @@ from .state import (
     selected_contest,
     selected_submission,
     selected_task,
+    selected_task_number,
     set_contest,
     set_submission,
     set_task,
@@ -33,7 +35,7 @@ def shell_prompt(context: dict[str, Any] | None = None) -> str:
     if contest:
         parts.append(f"{contest[0]}/{contest[1]}")
     if task is not None:
-        parts.append(str(task))
+        parts.append(selected_task_number(context) or str(task))
     return f"[{' '.join(parts)}] > "
 
 
@@ -185,10 +187,6 @@ def _numeric_select(token: str) -> bool:
 
     if task is None:
         items = cached_items("tasks", f"{contest[0]}/{contest[1]}")
-        exact = next((item for item in items if str(item.get("id")) == token), None)
-        if exact is not None:
-            set_task(exact)
-            return True
         if 1 <= number <= len(items):
             set_task(items[number - 1])
             return True
@@ -229,10 +227,7 @@ def _entity_select(token: str) -> bool:
 
     if task is None:
         items = cached_items("tasks", f"{contest[0]}/{contest[1]}")
-        match = next(
-            (item for item in items if str(item.get("id", "")).casefold() == lowered),
-            None,
-        )
+        match = find_task(items, token)
     else:
         items = cached_items("submissions", f"{contest[0]}/{contest[1]}/{task}")
         match = next(
