@@ -16,6 +16,12 @@ From PyPI:
 pipx install nitro-ai-judge-cli
 ```
 
+On Arch Linux:
+available on AUR as `naji-cli`
+```bash
+yay -S naji-cli
+```
+
 From a checkout:
 
 ```bash
