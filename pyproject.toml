@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 authors = [
-  { name = "Mihnea Teodor Stoica" }
+  { name = "Mihnea-Teodor Stoica" }
 ]
 keywords = ["nitro", "cli", "judge", "competitions"]
 classifiers = [
