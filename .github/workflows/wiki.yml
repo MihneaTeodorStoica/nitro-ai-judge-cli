@@ -1,0 +1,53 @@
+name: Publish Wiki
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - SECURITY.md
+      - CONTRIBUTING.md
+      - CODE_OF_CONDUCT.md
+      - "wiki/**"
+      - .github/workflows/wiki.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Publish wiki
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          source_dir="${RUNNER_TEMP}/wiki-source"
+          wiki_dir="${RUNNER_TEMP}/wiki"
+          mkdir -p "${source_dir}"
+          cp README.md "${source_dir}/Home.md"
+          cp SECURITY.md "${source_dir}/Security.md"
+          cp CONTRIBUTING.md "${source_dir}/Contributing.md"
+          cp CODE_OF_CONDUCT.md "${source_dir}/Code-of-Conduct.md"
+          cp wiki/*.md "${source_dir}/"
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" "${wiki_dir}"
+          git -C "${wiki_dir}" rm -r --ignore-unmatch -- .
+          cp "${source_dir}"/*.md "${wiki_dir}/"
+          git -C "${wiki_dir}" add .
+
+          if git -C "${wiki_dir}" diff --cached --quiet; then
+            exit 0
+          fi
+
+          git -C "${wiki_dir}" config user.name "github-actions[bot]"
+          git -C "${wiki_dir}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "${wiki_dir}" commit -m "Sync wiki from ${GITHUB_SHA}"
+          git -C "${wiki_dir}" push origin HEAD:master
