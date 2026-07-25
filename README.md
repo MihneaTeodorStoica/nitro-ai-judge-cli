@@ -2,6 +2,11 @@
 
 `naij` is a command-line client for `judge.nitro-ai.org`. It can browse competitions and tasks, download task data, submit solutions, inspect feedback, and launch past competitions locally with Docker.
 
+> **Help wanted:** A new Textual TUI is under active development. Testing,
+> UI/UX feedback, bug reports, and code contributions are welcome on the
+> [`feat/textual-tui-usability-overhaul`](https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli/tree/feat/textual-tui-usability-overhaul)
+> branch.
+
 ## Requirements
 
 - Python 3.10+
