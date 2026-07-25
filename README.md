@@ -1,11 +1,21 @@
-# Nitro AI Judge CLI (NAIJ)
+# Nitro AI Judge CLI
 
 `naij` is a command-line client for `judge.nitro-ai.org`. It can browse competitions and tasks, download task data, submit solutions, inspect feedback, and launch past competitions locally with Docker.
+
+For a full-screen contest cockpit with searchable contests, ordered tasks, data
+downloads, local play controls, and submission feedback, run:
+
+```bash
+naij tui
+```
+
+The TUI can start before login and will prompt for credentials when needed.
+Selections are shared with the regular `naij` shell and commands.
 
 ## Requirements
 
 - Python 3.10+
-- no third-party runtime dependencies
+- Textual 8.2.x (installed automatically)
 - Docker with `docker compose` for `naij play`
 
 ## Installation
@@ -35,7 +45,56 @@ naij login
 naij login --username MihneaStoica
 ```
 
-Login posts to Nitro's `/api/auth/login` endpoint and stores the returned access and refresh tokens. NAIJ refreshes an expired access token when possible and asks you to log in again when the saved refresh token is no longer valid.
+Login posts to Nitro's `/api/auth/login` endpoint and stores the returned access and refresh tokens. Nitro AI Judge refreshes an expired access token when possible and asks you to log in again when the saved refresh token is no longer valid.
+
+## Full-screen TUI
+
+Run `naij tui` for the full-screen interface. Its Yazi-inspired browser keeps
+contests and one-based tasks in separate columns while the right pane provides
+four task views:
+
+1. Overview
+2. Data
+3. Submissions
+4. Play
+
+The layout adapts to the terminal. At 100 columns and wider all three panes
+remain visible. From 60 through 99 columns, only the active pane is shown and
+Tab/Shift-Tab cycles contests, tasks, and task details. Below 60 columns or 20
+rows, Nitro AI Judge shows a resize message instead of compressing the interface.
+
+The complete keymap is:
+
+- `j`/`k` or Up/Down: move
+- Enter: open
+- `h`/`l` or Left/Right: move across browser panes and task views
+- Esc: back
+- Tab/Shift-Tab: cycle panes, or move between form fields
+- `/`: filter the active contest, task, or submission list
+- `r`: refresh the active view
+- `?`: contextual help
+- `q` or Ctrl+D: quit
+- `1`–`4`: select Overview, Data, Submissions, or Play
+- `d`: open the task-data download form
+- `s`: open the submission form
+- `p`: open the Play action menu
+
+Forms use Space to toggle choices and Tab to move; the submission form also has
+clickable Submit and Cancel buttons, and the Submissions view has a persistent
+New submission button. That view requests and displays only the signed-in
+user's submissions. Play `down` additionally requires `y` confirmation. Mouse
+selection, scrolling, tab switching, and field focus are supported as an
+optional convenience; every workflow remains keyboard-accessible. Hold Shift
+while dragging when the terminal's normal text selection is needed.
+
+The TUI loads cached contests, tasks, and submissions before connecting. A
+temporary network failure or expired login leaves that cached content visible
+with one recovery message at the bottom. When a request detects stale
+credentials, the TUI refreshes the bearer token and generated site cookie once,
+retries once, and opens the login form if recovery fails. A real `403` after
+refresh remains an access-denied error rather than reopening login repeatedly.
+Loaded task statements are merged into the task cache, so reopening a task can
+show its full statement before the next network refresh.
 
 ## Basic usage
 
@@ -89,7 +148,7 @@ naij set-final
 naij play
 ```
 
-If saved context is missing or stale, NAIJ reports which `naij use` command will refresh it.
+If saved context is missing or stale, Nitro AI Judge reports which `naij use` command will refresh it.
 
 ## Downloads and submissions
 
@@ -247,7 +306,7 @@ Completion resolves the current argument slot and shows only its next useful lev
 
 ## State and security
 
-By default, NAIJ stores credentials, context, shell history, and play data under `~/.naij/`:
+By default, Nitro AI Judge stores credentials, context, shell history, and play data under `~/.naij/`:
 
 ```text
 ~/.naij/state.json
@@ -274,7 +333,7 @@ Version 2.x renames the canonical command from `nitro-cli` to `naij` and the Pyt
 
 The legacy `NITRO_STATE_DIR`, `NITRO_API_BASE_URL`, and `NITRO_SUBMISSION_PROXY` variables remain lower-priority fallbacks through 2.x and are planned for removal in 3.0.0.
 
-Default state moves from `~/.nitro-cli` to `~/.naij`. If only the old directory exists, NAIJ renames it before loading state. If both exist, NAIJ uses the new directory, leaves the old one untouched, and warns once per process. If the rename fails, NAIJ uses the old directory for that run and prints manual-migration guidance. Setting either state-directory environment variable disables automatic default-path migration.
+Default state moves from `~/.nitro-cli` to `~/.naij`. If only the old directory exists, Nitro AI Judge renames it before loading state. If both exist, Nitro AI Judge uses the new directory, leaves the old one untouched, and warns once per process. If the rename fails, Nitro AI Judge uses the old directory for that run and prints manual-migration guidance. Setting either state-directory environment variable disables automatic default-path migration.
 
 Generated native completion registers both command names during the 2.x compatibility period while invoking `naij` internally.
 

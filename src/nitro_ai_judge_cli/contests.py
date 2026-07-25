@@ -234,8 +234,10 @@ def load_competitions_page(
                 "last_page",
                 "totalPages",
                 "total_pages",
-                default=1,
+                default=0,
             )
+            if not last_page and len(competitions) < page_size:
+                last_page = page
             return competitions, last_page
 
     status, body, _ = request_text(
@@ -279,6 +281,23 @@ def load_competitions(
         cookies, bearer, page=1, page_size=page_size, featured=featured
     )
     all_competitions = list(competitions)
+    if last_page == 0:
+        previous_page = repr(competitions)
+        for next_page in range(2, 1001):
+            page_items, discovered_last_page = load_competitions_page(
+                cookies,
+                bearer,
+                page=next_page,
+                page_size=page_size,
+                featured=featured,
+            )
+            if not page_items or repr(page_items) == previous_page:
+                break
+            all_competitions.extend(page_items)
+            previous_page = repr(page_items)
+            if discovered_last_page and next_page >= discovered_last_page:
+                break
+        return all_competitions
     if last_page <= 1:
         return all_competitions
 
@@ -350,13 +369,6 @@ def load_tasks(
         path=f"/organization/{org}/competition/{comp}/tasks",
         bearer=bearer,
     )
-    if status == 200:
-        data = body_json(body)
-        tasks = list_payload(data, "tasks", "items", "data")
-        if tasks is not None:
-            return tasks
-
-    status, body, _ = api_request_text(path="/tasks", bearer=bearer)
     if status == 200:
         data = body_json(body)
         tasks = list_payload(data, "tasks", "items", "data")
@@ -662,6 +674,7 @@ def download_task_data(
     output_dir: str = ".",
     output_path: str | None = None,
     force: bool = False,
+    show_progress: bool = True,
 ) -> list[dict[str, Any]]:
     explicit_categories = categories is not None
     normalized_categories = (
@@ -679,7 +692,10 @@ def download_task_data(
     for category in normalized_categories:
         spinner_stop: threading.Event | None = None
         spinner_thread: threading.Thread | None = None
-        spinner_stop, spinner_thread = _start_spinner(f"Downloading {category} ...")
+        if show_progress:
+            spinner_stop, spinner_thread = _start_spinner(
+                f"Downloading {category} ..."
+            )
         try:
             if category == "statement":
                 body = task_statement_markdown(cookies, bearer, org, comp, task_id)

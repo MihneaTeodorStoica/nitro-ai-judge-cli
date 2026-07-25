@@ -147,7 +147,9 @@ def play_images(org: str, comp: str) -> tuple[str, str]:
     )
 
 
-def ensure_play_images(images: tuple[str, str], policy: str) -> None:
+def ensure_play_images(
+    images: tuple[str, str], policy: str, *, quiet: bool = False
+) -> None:
     if policy not in {"always", "missing", "never"}:
         raise ValueError(f"invalid pull policy: {policy}")
 
@@ -165,19 +167,27 @@ def ensure_play_images(images: tuple[str, str], policy: str) -> None:
     required = list(images) if policy == "always" else missing if policy == "missing" else []
     total = len(required)
     for index, image in enumerate(required, 1):
-        spinner = Spinner(
-            f"Pulling image {index}/{total}: {image}", stream=sys.stdout
-        ).start()
+        spinner = (
+            None
+            if quiet
+            else Spinner(
+                f"Pulling image {index}/{total}: {image}", stream=sys.stdout
+            ).start()
+        )
         try:
             run_process(["docker", "pull", image])
         except Exception:
-            spinner.stop()
+            if spinner is not None:
+                spinner.stop()
             raise
-        spinner.stop()
-        print(f"Pulled image: {image}")
+        if spinner is not None:
+            spinner.stop()
+            print(f"Pulled image: {image}")
 
 
-def resolve_play_gpu(image: str, requested: bool | None) -> tuple[bool, str]:
+def resolve_play_gpu(
+    image: str, requested: bool | None, *, quiet: bool = False
+) -> tuple[bool, str]:
     if requested is False:
         return False, "disabled"
     probe = run_process(
@@ -202,7 +212,8 @@ def resolve_play_gpu(image: str, requested: bool | None) -> tuple[bool, str]:
     )
     if requested is True:
         raise RuntimeError(f"GPU requested but unavailable: {reason}")
-    print(f"GPU unavailable; using CPU ({reason})")
+    if not quiet:
+        print(f"GPU unavailable; using CPU ({reason})")
     return False, reason
 
 
@@ -231,6 +242,99 @@ def describe_play_state(org: str, comp: str) -> str:
         containers = [json.loads(line) for line in result.stdout.splitlines() if line]
     states = sorted({str(item.get("State", "unknown")).lower() for item in containers})
     return ", ".join(states) if states else "not created"
+
+
+def load_play_logs(org: str, comp: str, *, tail: int = 80) -> str:
+    """Return recent Compose logs without printing."""
+    workdir = play_workdir(org, comp)
+    if not os.path.exists(os.path.join(workdir, "docker-compose.yml")):
+        return ""
+    result = run_process(
+        [*play_compose_base_cmd(org, comp), "logs", "--tail", str(tail)],
+        cwd=workdir,
+        check=False,
+    )
+    return "\n".join(
+        part
+        for part in (
+            (getattr(result, "stdout", "") or "").strip(),
+            (getattr(result, "stderr", "") or "").strip(),
+        )
+        if part
+    )
+
+
+def load_play_ps(org: str, comp: str) -> str:
+    """Return the current Compose process table without printing."""
+    workdir = play_workdir(org, comp)
+    if not os.path.exists(os.path.join(workdir, "docker-compose.yml")):
+        return "No play environment found."
+    result = run_process(
+        [*play_compose_base_cmd(org, comp), "ps"],
+        cwd=workdir,
+        check=False,
+    )
+    return "\n".join(
+        part
+        for part in (
+            (getattr(result, "stdout", "") or "").strip(),
+            (getattr(result, "stderr", "") or "").strip(),
+        )
+        if part
+    )
+
+
+def load_play_status(
+    org: str, comp: str, *, logs: int = 0
+) -> dict[str, str | None]:
+    """Return the saved and live play state for CLI and TUI renderers."""
+    env = read_play_env(org, comp)
+    current_state = describe_play_state(org, comp)
+    if current_state in {"created", "exited"}:
+        current_state = "stopped"
+    bind = env.get("BIND_ADDRESS", "127.0.0.1")
+    host = "localhost" if bind in {"127.0.0.1", "0.0.0.0"} else bind
+    jupyter_port = env.get("JUPYTER_PORT")
+    proxy_port = env.get("PROXY_PORT")
+    requested = env.get("GPU_REQUESTED")
+    effective = "gpu" if env.get("GPU_ENABLED") == "1" else "cpu"
+    return {
+        "state": current_state,
+        "jupyter_url": f"http://{host}:{jupyter_port}" if jupyter_port else None,
+        "proxy_url": f"http://{host}:{proxy_port}" if proxy_port else None,
+        "gpu": f"{requested} (effective {effective})" if requested else None,
+        "images": ", ".join(
+            item
+            for item in (
+                env.get("NOTEBOOK_IMAGE"),
+                env.get("PROXY_IMAGE"),
+            )
+            if item
+        )
+        or None,
+        "workspace": play_workspace_volume(org, comp),
+        "workdir": play_workdir(org, comp),
+        "logs": load_play_logs(org, comp, tail=logs) if logs else None,
+    }
+
+
+def change_play_state(org: str, comp: str, action: str) -> None:
+    """Start or restart existing containers without terminal output."""
+    if action not in {"start", "restart"}:
+        raise ValueError(f"Unsupported play state change: {action}")
+    workdir = play_workdir(org, comp)
+    if not os.path.exists(os.path.join(workdir, "docker-compose.yml")):
+        raise RuntimeError(
+            f"No play environment found; use 'play up {org}/{comp}'"
+        )
+    ensure_docker_ready()
+    if action == "start" and not run_process(
+        [*play_compose_base_cmd(org, comp), "ps", "-a", "-q"],
+        cwd=workdir,
+        check=False,
+    ).stdout.strip():
+        raise RuntimeError("No containers exist; use 'play up' instead")
+    run_process([*play_compose_base_cmd(org, comp), action], cwd=workdir)
 
 
 def migrate_legacy_workspace(org: str, comp: str, image: str) -> None:
@@ -448,6 +552,7 @@ def cmd_play_up(
     bind: str,
     pull: str,
     wait_timeout: int,
+    quiet: bool = False,
 ) -> int:
     ensure_docker_ready()
     saved = read_play_env(org, comp)
@@ -476,8 +581,8 @@ def cmd_play_up(
                 raise RuntimeError("--port and --proxy-port must be different")
             selected_proxy_port = allocate_port(bind, selected_proxy_port + 1, None)
     images = play_images(org, comp)
-    ensure_play_images(images, pull)
-    effective_gpu, _ = resolve_play_gpu(images[0], gpu)
+    ensure_play_images(images, pull, quiet=quiet)
+    effective_gpu, _ = resolve_play_gpu(images[0], gpu, quiet=quiet)
     migrate_legacy_workspace(org, comp, images[0])
     requested = "auto" if gpu is None else ("gpu" if gpu else "cpu")
     workdir = write_play_files(
@@ -493,34 +598,43 @@ def cmd_play_up(
     base_cmd = play_compose_base_cmd(org, comp)
     run_process([*base_cmd, "up", "-d"], cwd=workdir)
     wait_for_play(org, comp, bind, selected_port, selected_proxy_port, wait_timeout)
-    print(f"Started {org}/{comp}")
-    host = "localhost" if bind in {"127.0.0.1", "0.0.0.0"} else bind
-    print(f"Jupyter: http://{host}:{selected_port}")
-    print(f"Proxy: http://{host}:{selected_proxy_port}")
-    print(f"State: {workdir}")
+    if not quiet:
+        print(f"Started {org}/{comp}")
+        host = "localhost" if bind in {"127.0.0.1", "0.0.0.0"} else bind
+        print(f"Jupyter: http://{host}:{selected_port}")
+        print(f"Proxy: http://{host}:{selected_proxy_port}")
+        print(f"State: {workdir}")
     return 0
 
 
-def cmd_play_stop(org: str, comp: str) -> int:
+def cmd_play_stop(org: str, comp: str, *, quiet: bool = False) -> int:
     ensure_docker_ready()
     workdir = play_workdir(org, comp)
     if not os.path.exists(os.path.join(workdir, "docker-compose.yml")):
-        print(f"No play environment found: {workdir}")
+        if not quiet:
+            print(f"No play environment found: {workdir}")
         return 0
     run_process([*play_compose_base_cmd(org, comp), "stop"], cwd=workdir)
-    print(f"Stopped {org}/{comp}")
+    if not quiet:
+        print(f"Stopped {org}/{comp}")
     return 0
 
 
 def cmd_play_down(
-    org: str, comp: str, *, volumes: bool = False, force: bool = False
+    org: str,
+    comp: str,
+    *,
+    volumes: bool = False,
+    force: bool = False,
+    quiet: bool = False,
 ) -> int:
     ensure_docker_ready()
     workdir = play_workdir(org, comp)
     compose_file = os.path.join(workdir, "docker-compose.yml")
     if not os.path.exists(compose_file):
         shutil.rmtree(workdir, ignore_errors=True)
-        print(f"No play environment found: {workdir}")
+        if not quiet:
+            print(f"No play environment found: {workdir}")
         return 0
     if volumes and not force:
         if not sys.stdin.isatty():
@@ -537,7 +651,8 @@ def cmd_play_down(
     if volumes:
         command.append("--volumes")
     run_process(command, cwd=workdir)
-    print(f"Removed {org}/{comp}")
+    if not quiet:
+        print(f"Removed {org}/{comp}")
     return 0
 
 
@@ -547,51 +662,34 @@ def cmd_play_logs(org: str, comp: str, *, follow: bool = False) -> int:
     if not os.path.exists(os.path.join(workdir, "docker-compose.yml")):
         print(f"No play environment found: {workdir}")
         return 1
+    if not follow:
+        print(load_play_logs(org, comp), end="")
+        return 0
     try:
-        command = [*play_compose_base_cmd(org, comp), "logs"]
-        if follow:
-            command.append("-f")
-        result = subprocess.run(command, cwd=workdir)
+        return subprocess.run(
+            [*play_compose_base_cmd(org, comp), "logs", "-f"],
+            cwd=workdir,
+        ).returncode
     except FileNotFoundError:
         print("Error: Docker is not installed or not on PATH")
         return 1
-    return result.returncode
 
 
 def cmd_play(args: argparse.Namespace) -> int:
     try:
         org, comp = parse_competition_ref(args.competition)
-        workdir = play_workdir(org, comp)
-        compose_file = os.path.join(workdir, "docker-compose.yml")
-        if args.play_action == "start":
-            if not os.path.exists(compose_file):
-                raise RuntimeError(
-                    f"No play environment found; use 'play up {org}/{comp}'"
-                )
-            ensure_docker_ready()
-            if not run_process(
-                [*play_compose_base_cmd(org, comp), "ps", "-a", "-q"],
-                cwd=workdir,
-                check=False,
-            ).stdout.strip():
-                raise RuntimeError("No containers exist; use 'play up' instead")
-            run_process([*play_compose_base_cmd(org, comp), "start"], cwd=workdir)
+        if args.play_action in {"start", "restart"}:
+            change_play_state(org, comp, args.play_action)
             return 0
         if args.play_action == "stop":
             return cmd_play_stop(org, comp)
-        if args.play_action == "restart":
-            if not os.path.exists(compose_file):
-                raise RuntimeError(
-                    f"No play environment found; use 'play up {org}/{comp}'"
-                )
-            ensure_docker_ready()
-            run_process([*play_compose_base_cmd(org, comp), "restart"], cwd=workdir)
-            return 0
         if args.play_action == "logs":
             return cmd_play_logs(org, comp, follow=args.follow)
         if args.play_action == "down":
             return cmd_play_down(org, comp, volumes=args.volumes, force=args.force)
         if args.play_action == "ps":
+            workdir = play_workdir(org, comp)
+            compose_file = os.path.join(workdir, "docker-compose.yml")
             if not os.path.exists(compose_file):
                 raise RuntimeError(
                     f"No play environment found; use 'play up {org}/{comp}'"
@@ -601,25 +699,16 @@ def cmd_play(args: argparse.Namespace) -> int:
             print(result.stdout, end="")
             return 0
         if args.play_action == "status":
-            env = read_play_env(org, comp)
+            status = load_play_status(org, comp)
             print(f"Contest: {org}/{comp}")
-            print(f"State: {describe_play_state(org, comp)}")
-            if env:
-                host = (
-                    "localhost"
-                    if env.get("BIND_ADDRESS", "127.0.0.1")
-                    in {"127.0.0.1", "0.0.0.0"}
-                    else env["BIND_ADDRESS"]
-                )
-                print(f"Jupyter: http://{host}:{env.get('JUPYTER_PORT')}")
-                print(f"Proxy: http://{host}:{env.get('PROXY_PORT')}")
-                print(
-                    f"GPU: {env.get('GPU_REQUESTED')} "
-                    f"(effective {'gpu' if env.get('GPU_ENABLED') == '1' else 'cpu'})"
-                )
-                print(f"Images: {env.get('NOTEBOOK_IMAGE')}, {env.get('PROXY_IMAGE')}")
-            print(f"Workspace: {play_workspace_volume(org, comp)}")
-            print(f"Files: {workdir}")
+            print(f"State: {status['state']}")
+            if status["jupyter_url"]:
+                print(f"Jupyter: {status['jupyter_url']}")
+                print(f"Proxy: {status['proxy_url']}")
+                print(f"GPU: {status['gpu']}")
+                print(f"Images: {status['images']}")
+            print(f"Workspace: {status['workspace']}")
+            print(f"Files: {status['workdir']}")
             return 0
         return cmd_play_up(
             org,

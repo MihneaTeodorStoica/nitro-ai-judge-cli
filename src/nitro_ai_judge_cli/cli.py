@@ -253,6 +253,8 @@ def build_parser() -> argparse.ArgumentParser:
     login = sub.add_parser("login", help="Login to Nitro Judge")
     login.add_argument("--username")
 
+    sub.add_parser("tui", help="Open the full-screen contest cockpit")
+
     contests = sub.add_parser("contests", help="List competitions")
     contests.add_argument("--page", type=int, default=1)
     contests.add_argument("--page-size", type=int, default=DEFAULT_PAGE_SIZE)
@@ -506,6 +508,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_shell(lambda words: main(words))
     if args.cmd == "login":
         return cmd_login(args.username, None)
+    if args.cmd == "tui":
+        from .tui import run_tui
+
+        return run_tui()
     if args.cmd == "play":
         context = load_context()
         inherited = not getattr(args, "competition", None)

@@ -19,6 +19,59 @@ from .config import BASE_URL, USER_AGENT
 from .state import CredentialsError, load_state, save_state
 
 UA = USER_AGENT
+REDIRECT_CODES = {301, 302, 303, 307, 308}
+MAX_REDIRECTS = 5
+
+
+class RedirectError(RuntimeError):
+    """A redirect could not be followed safely."""
+
+
+class AuthenticationRedirect(RedirectError):
+    """A request was redirected to the login flow."""
+
+
+class AuthenticationRequired(RuntimeError):
+    """An authenticated request was rejected by the server."""
+
+
+class _NoRedirectHandler(urllib_request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib_request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib_request.build_opener(_NoRedirectHandler())
+
+
+def _open_once(req: urllib_request.Request, timeout: int) -> Any:
+    return _NO_REDIRECT_OPENER.open(req, timeout=timeout)
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urllib.parse.urlsplit(url)
+    port = parsed.port
+    if port is None:
+        port = 443 if parsed.scheme.casefold() == "https" else 80
+    return parsed.scheme.casefold(), (parsed.hostname or "").casefold(), port
+
+
+def _normalized_path(url: str) -> str:
+    path = urllib.parse.urlsplit(url).path.rstrip("/").casefold()
+    return path or "/"
+
+
+def _is_auth_path(url: str) -> bool:
+    path = _normalized_path(url)
+    segments = set(path.split("/"))
+    return bool(segments & {"auth", "login", "signin", "oauth", "oauth2", "sso"})
 
 
 def configure_runtime(api_url: str | None, submission_proxy: bool) -> None:
@@ -149,18 +202,84 @@ def request(
     if headers:
         req_headers.update(headers)
 
-    try:
-        req = urllib_request.Request(url, headers=req_headers, data=data, method=method)
-        with urllib_request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read(), dict(resp.headers.items())
-    except urllib_error.HTTPError as e:
+    current_url = url
+    current_method = method
+    current_data = data
+    for redirect_count in range(MAX_REDIRECTS + 1):
+        req = urllib_request.Request(
+            current_url,
+            headers=req_headers,
+            data=current_data,
+            method=current_method,
+        )
         try:
-            body = e.read()
-        except Exception:
-            body = b""
-        return e.code, body, dict(e.headers.items())
-    except Exception as e:
-        return 0, str(e).encode("utf-8", errors="replace"), {}
+            with _open_once(req, timeout) as resp:
+                status = resp.status
+                body = resp.read()
+                response_headers = dict(resp.headers.items())
+        except urllib_error.HTTPError as exc:
+            try:
+                body = exc.read()
+            except Exception:
+                body = b""
+            status = exc.code
+            response_headers = (
+                dict(exc.headers.items()) if exc.headers is not None else {}
+            )
+        except RedirectError:
+            raise
+        except Exception as exc:
+            return 0, str(exc).encode("utf-8", errors="replace"), {}
+
+        location = next(
+            (
+                value
+                for key, value in response_headers.items()
+                if key.casefold() == "location"
+            ),
+            None,
+        )
+        if status not in REDIRECT_CODES or not location:
+            if status == 401 and (bearer or cookies):
+                raise AuthenticationRequired(
+                    "Authentication required; sign in again and retry."
+                )
+            return status, body, response_headers
+        if redirect_count == MAX_REDIRECTS:
+            raise RedirectError(
+                f"Too many redirects while requesting {urllib.parse.urlsplit(url).path}"
+            )
+
+        target = urllib.parse.urljoin(current_url, location)
+        if _is_auth_path(target) and _normalized_path(target) != _normalized_path(
+            current_url
+        ):
+            raise AuthenticationRedirect(
+                "Authentication required; sign in again and retry."
+            )
+
+        if _origin(target) != _origin(current_url):
+            credential_bearing = bool(
+                current_data
+                or req.get_header("Authorization")
+                or req.get_header("Cookie")
+            )
+            if credential_bearing:
+                raise RedirectError(
+                    "Refused to send credentials across origins "
+                    f"({_origin(current_url)[1]} -> {_origin(target)[1]})."
+                )
+            req_headers.pop("Authorization", None)
+            req_headers.pop("Cookie", None)
+
+        current_url = target
+        if status == 303 or (
+            status in {301, 302} and current_method.casefold() == "post"
+        ):
+            current_method = "GET"
+            current_data = None
+
+    raise AssertionError("redirect loop exhausted")
 
 def api_request_bytes(**kwargs: Any) -> tuple[int, bytes, dict[str, str]]:
     return request(base_url=config.runtime().api_base_url, **kwargs)

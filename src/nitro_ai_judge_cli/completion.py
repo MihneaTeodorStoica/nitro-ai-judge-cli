@@ -10,7 +10,7 @@ from .state import load_context, selected_contest, selected_submission, selected
 
 
 COMMANDS = (
-    "login", "contests", "tasks", "task", "download-data", "play", "submit",
+    "login", "tui", "contests", "tasks", "task", "download-data", "play", "submit",
     "submissions", "submission", "set-final", "unset-final", "use", "ls",
     "show", "completion",
 )
@@ -22,6 +22,7 @@ GLOBAL_OPTIONS = ("--api-url", "--submission-proxy", "--state-dir", "--help")
 PLAY_ACTIONS = ("up", "start", "stop", "restart", "down", "logs", "ps", "status")
 OPTION_GROUPS = {
     "login": (("--username",), ("--help",)),
+    "tui": (("--help",),),
     "contests": (
         ("--page",), ("--page-size",), ("--all-pages",), ("--all",),
         ("--help",),

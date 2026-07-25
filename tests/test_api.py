@@ -42,7 +42,7 @@ class _Response:
 class TransportTests(unittest.TestCase):
     def test_request_preserves_url_method_auth_headers_and_user_agent(self) -> None:
         response = _Response(201, b'{}', {"X-Reply": "yes"})
-        with patch.object(api.urllib_request, "urlopen", return_value=response) as open_url:
+        with patch.object(api, "_open_once", return_value=response) as open_url:
             result = api.request(
                 "/entries",
                 cookies=("clearance", "session"),
@@ -56,7 +56,7 @@ class TransportTests(unittest.TestCase):
             )
 
         self.assertEqual(result, (201, b'{}', {"X-Reply": "yes"}))
-        request, = open_url.call_args.args
+        request = open_url.call_args.args[0]
         self.assertEqual(
             request.full_url,
             "https://api.invalid/root/entries?page=2&featured=true",
@@ -68,7 +68,7 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(request.get_header("X-test"), "value")
         self.assertEqual(request.get_header("User-agent"), config.USER_AGENT)
         self.assertTrue(config.USER_AGENT.startswith("NAIJ/"))
-        self.assertEqual(open_url.call_args.kwargs, {"timeout": 17})
+        self.assertEqual(open_url.call_args.args[1], 17)
 
     def test_request_returns_http_error_body_and_headers(self) -> None:
         error = urllib.error.HTTPError(
@@ -78,9 +78,84 @@ class TransportTests(unittest.TestCase):
             {"X-Reason": "denied"},
             io.BytesIO(b"no access"),
         )
-        with patch.object(api.urllib_request, "urlopen", side_effect=error):
+        with patch.object(api, "_open_once", side_effect=error):
             result = api.request("/denied", base_url="https://api.invalid")
         self.assertEqual(result, (403, b"no access", {"X-Reason": "denied"}))
+
+    def test_same_origin_canonical_redirect_is_followed(self) -> None:
+        responses = [
+            _Response(302, b"", {"Location": "/entries/"}),
+            _Response(200, b"done"),
+        ]
+        with patch.object(api, "_open_once", side_effect=responses) as open_url:
+            result = api.request(
+                "/entries",
+                bearer="secret",
+                base_url="https://api.invalid",
+            )
+        self.assertEqual(result[:2], (200, b"done"))
+        self.assertEqual(
+            [call.args[0].full_url for call in open_url.call_args_list],
+            ["https://api.invalid/entries", "https://api.invalid/entries/"],
+        )
+        self.assertEqual(
+            open_url.call_args_list[1].args[0].get_header("Authorization"),
+            "Bearer secret",
+        )
+
+    def test_login_redirect_becomes_actionable_authentication_error(self) -> None:
+        with patch.object(
+            api,
+            "_open_once",
+            return_value=_Response(302, b"", {"Location": "/login"}),
+        ):
+            with self.assertRaisesRegex(
+                api.AuthenticationRedirect, "sign in again"
+            ):
+                api.request(
+                    "/competitions",
+                    bearer="expired",
+                    base_url="https://judge.invalid/api",
+                )
+
+    def test_authenticated_401_becomes_refreshable_authentication_error(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://api.invalid/private",
+            401,
+            "Unauthorized",
+            {},
+            io.BytesIO(b"expired"),
+        )
+        with patch.object(api, "_open_once", side_effect=error):
+            with self.assertRaisesRegex(
+                api.AuthenticationRequired, "sign in again"
+            ):
+                api.request(
+                    "/private",
+                    bearer="expired",
+                    base_url="https://api.invalid",
+                )
+
+    def test_credential_bearing_cross_origin_redirect_is_rejected(self) -> None:
+        with patch.object(
+            api,
+            "_open_once",
+            return_value=_Response(
+                302,
+                b"",
+                {"Location": "https://attacker.invalid/collect"},
+            ),
+        ) as open_url:
+            with self.assertRaisesRegex(
+                api.RedirectError, "Refused to send credentials"
+            ):
+                api.request(
+                    "/private",
+                    cookies=("clearance", "session"),
+                    bearer="secret",
+                    base_url="https://judge.invalid",
+                )
+        self.assertEqual(open_url.call_count, 1)
 
     def test_api_client_keeps_api_and_site_roots_separate(self) -> None:
         client = api.APIClient(

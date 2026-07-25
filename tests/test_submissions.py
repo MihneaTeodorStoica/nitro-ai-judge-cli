@@ -88,6 +88,111 @@ class SubmissionTests(unittest.TestCase):
             },
         )
 
+    def test_submission_accepts_async_202_response(self) -> None:
+        response = json.dumps({"submissionID": "accepted-id"})
+        config._runtime = config.RuntimeConfig(config.DEFAULT_API_BASE_URL, False)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory, "answer.csv")
+            output.write_text("id,value\n1,2\n", encoding="utf-8")
+            with patch.object(
+                submissions,
+                "api_request_text",
+                return_value=(202, response, {}),
+            ):
+                direct = submissions.create_submission(
+                    ("", ""),
+                    "token",
+                    "org",
+                    "contest",
+                    "7",
+                    str(output),
+                    None,
+                    "",
+                )
+
+        config._runtime = config.RuntimeConfig("http://proxy.invalid", True)
+        with patch.object(
+            submissions,
+            "api_request_text",
+            return_value=(202, response, {}),
+        ):
+            proxy = submissions.create_submission(
+                ("", ""),
+                "token",
+                "org",
+                "contest",
+                "7",
+                "answer.csv",
+                "solution.py",
+                "",
+            )
+
+        self.assertEqual(direct["submissionID"], "accepted-id")
+        self.assertEqual(proxy["submissionID"], "accepted-id")
+
+    def test_submission_rejects_malformed_success_response(self) -> None:
+        config._runtime = config.RuntimeConfig("http://proxy.invalid", True)
+        with patch.object(
+            submissions,
+            "api_request_text",
+            return_value=(200, "not json", {}),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "Could not parse submission response"
+            ):
+                submissions.create_submission(
+                    ("", ""),
+                    "token",
+                    "org",
+                    "contest",
+                    "7",
+                    "answer.csv",
+                    "solution.py",
+                    "",
+                )
+
+    def test_submission_rejects_success_without_id(self) -> None:
+        config._runtime = config.RuntimeConfig("http://proxy.invalid", True)
+        with patch.object(
+            submissions,
+            "api_request_text",
+            return_value=(202, json.dumps({"state": "queued"}), {}),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, "Submission response did not contain an ID"
+            ):
+                submissions.create_submission(
+                    ("", ""),
+                    "token",
+                    "org",
+                    "contest",
+                    "7",
+                    "answer.csv",
+                    "solution.py",
+                    "",
+                )
+
+    def test_submission_preserves_non_success_failure(self) -> None:
+        config._runtime = config.RuntimeConfig("http://proxy.invalid", True)
+        with patch.object(
+            submissions,
+            "api_request_text",
+            return_value=(422, '{"detail":"invalid output"}', {}),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError, r"HTTP 422:.*invalid output"
+            ):
+                submissions.create_submission(
+                    ("", ""),
+                    "token",
+                    "org",
+                    "contest",
+                    "7",
+                    "answer.csv",
+                    "solution.py",
+                    "",
+                )
+
     def test_submission_list_preserves_endpoint_and_parameters(self) -> None:
         body = json.dumps({"items": [{"id": "one"}], "lastPage": 3})
         with patch.object(

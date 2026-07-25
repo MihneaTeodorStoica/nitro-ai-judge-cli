@@ -16,6 +16,20 @@ from .ui import format_datetime_ms
 def get_username(state: dict[str, Any] | None) -> str:
     return (state or {}).get("username") or ""
 
+def _submission_response(status: int, body: str) -> dict[str, Any]:
+    if not 200 <= status < 300:
+        raise RuntimeError(f"HTTP {status}: {error_preview(body)}")
+    parsed = body_json(body)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Could not parse submission response")
+    if not (
+        parsed.get("submissionID")
+        or parsed.get("submissionId")
+        or parsed.get("id")
+    ):
+        raise RuntimeError("Submission response did not contain an ID")
+    return parsed
+
 def load_submission_metadata(
     cookies: tuple[str, str],
     bearer: str,
@@ -63,12 +77,7 @@ def create_submission(
             headers={"Content-Type": "application/json"},
             timeout=300,
         )
-        if status not in {200, 201}:
-            raise RuntimeError(f"HTTP {status}: {error_preview(body)}")
-        parsed = body_json(body)
-        if not isinstance(parsed, dict):
-            raise RuntimeError("Could not parse submission response")
-        return parsed
+        return _submission_response(status, body)
 
     with open(output_path, "rb") as f:
         output_bytes = f.read()
@@ -94,12 +103,7 @@ def create_submission(
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         timeout=300,
     )
-    if status not in {200, 201}:
-        raise RuntimeError(f"HTTP {status}: {error_preview(body)}")
-    parsed = body_json(body)
-    if not isinstance(parsed, dict):
-        raise RuntimeError("Could not parse submission response")
-    return parsed
+    return _submission_response(status, body)
 
 def resolve_submission_id(
     submission_id: str,

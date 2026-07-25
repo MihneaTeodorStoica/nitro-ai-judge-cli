@@ -99,7 +99,35 @@ class ContestRequestTests(unittest.TestCase):
             )
         self.assertEqual(items, [{"page": 1}, {"page": 2}, {"page": 3}])
 
-    def test_tasks_try_specific_api_generic_api_then_site(self) -> None:
+    def test_bare_api_lists_are_fetched_until_the_short_page(self) -> None:
+        pages = {
+            1: [{"id": 1}, {"id": 2}],
+            2: [{"id": 3}, {"id": 4}],
+            3: [{"id": 5}],
+        }
+
+        def api_request(**kwargs: object) -> tuple[int, str, dict[str, str]]:
+            page = int(kwargs["params"]["page"])  # type: ignore[index]
+            return 200, json.dumps(pages[page]), {}
+
+        with (
+            patch.object(contests, "api_request_text", side_effect=api_request) as request,
+            patch.object(contests, "request_text") as site,
+        ):
+            items = contests.load_competitions(
+                COOKIES,
+                BEARER,
+                page=None,
+                page_size=2,
+                featured=None,
+                all_pages=True,
+            )
+
+        self.assertEqual(items, [{"id": 1}, {"id": 2}, {"id": 3}, {"id": 4}, {"id": 5}])
+        self.assertEqual(request.call_count, 3)
+        site.assert_not_called()
+
+    def test_tasks_try_only_scoped_api_then_scoped_site(self) -> None:
         events: list[str] = []
         fallback = {
             "routes/competition/layout": {"data": {"taskList": [{"id": "task-1"}]}}
@@ -124,7 +152,6 @@ class ContestRequestTests(unittest.TestCase):
             events,
             [
                 "/organization/org/competition/contest/tasks",
-                "/tasks",
                 "/competitions/org/contest.data",
             ],
         )
