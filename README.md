@@ -1,5 +1,7 @@
 # Nitro AI Judge CLI (NAIJ)
 
+[![PyPI downloads](https://img.shields.io/pypi/dm/nitro-ai-judge-cli?label=PyPI%20downloads)](https://pypi.org/project/nitro-ai-judge-cli/)
+
 `naij` is a command-line client for `judge.nitro-ai.org`. It can browse competitions and tasks, download task data, submit solutions, inspect feedback, and launch past competitions locally with Docker.
 
 > **Help wanted:** A new Textual TUI is under active development. Testing,
