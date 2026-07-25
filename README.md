@@ -17,9 +17,9 @@ pipx install nitro-ai-judge-cli
 ```
 
 On Arch Linux:
-available on AUR as `naji-cli`
+available on AUR as `nitro-ai-judge-cli`
 ```bash
-yay -S naji-cli
+yay -S nitro-ai-judge-cli
 ```
 
 From a checkout:
