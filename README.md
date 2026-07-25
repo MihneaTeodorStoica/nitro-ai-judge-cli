@@ -12,6 +12,11 @@ naij tui
 The TUI can start before login and will prompt for credentials when needed.
 Selections are shared with the regular `naij` shell and commands.
 
+> **Help wanted:** A new Textual TUI is under active development. Testing,
+> UI/UX feedback, bug reports, and code contributions are welcome on the
+> [`feat/textual-tui-usability-overhaul`](https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli/tree/feat/textual-tui-usability-overhaul)
+> branch.
+
 ## Requirements
 
 - Python 3.10+
@@ -24,6 +29,12 @@ From PyPI:
 
 ```bash
 pipx install nitro-ai-judge-cli
+```
+
+On Arch Linux:
+available on AUR as `nitro-ai-judge-cli`
+```bash
+yay -S nitro-ai-judge-cli
 ```
 
 From a checkout:
