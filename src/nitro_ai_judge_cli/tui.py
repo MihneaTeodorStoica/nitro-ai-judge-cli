@@ -48,16 +48,7 @@ from .contests import (
     load_task_view,
     load_tasks,
 )
-from .play import (
-    PLAY_WAIT_TIMEOUT,
-    change_play_state,
-    cmd_play_down,
-    cmd_play_stop,
-    cmd_play_up,
-    load_play_logs,
-    load_play_ps,
-    load_play_status,
-)
+from .play_manager_client import ManagerClient
 from .state import (
     CredentialsError,
     cached_items,
@@ -195,6 +186,7 @@ def play_details(status: dict[str, Any]) -> Text:
         (
             "Connections",
             (
+                ("Manager", status.get("manager_url") or "unavailable"),
                 ("Jupyter", status.get("jupyter_url") or "—"),
                 ("Proxy", status.get("proxy_url") or "—"),
             ),
@@ -210,7 +202,7 @@ def play_details(status: dict[str, Any]) -> Text:
             "Paths",
             (
                 ("Workspace", status.get("workspace") or "—"),
-                ("Files", status.get("workdir") or "—"),
+                ("Health", status.get("service_health") or "unknown"),
             ),
         ),
     ):
@@ -593,22 +585,47 @@ class SubmitScreen(ModalScreen[SubmitRequest | None]):
 
 
 class PlayMenu(ModalScreen[str | None]):
-    ACTIONS = (
-        ("up", "Up — create and start"),
-        ("start", "Start — resume existing containers"),
-        ("stop", "Stop — pause containers"),
-        ("restart", "Restart — restart containers"),
-        ("down", "Down — remove containers and network"),
-        ("logs", "Logs — show recent output"),
-        ("ps", "Ps — show Compose processes"),
-        ("open", "Open — launch Jupyter"),
-    )
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, workspace_state: str = "missing") -> None:
+        super().__init__()
+        if workspace_state == "running":
+            self.actions = (
+                ("open", "Open Jupyter"),
+                ("stop", "Stop — preserve containers and workspace"),
+                ("restart", "Restart services"),
+                ("recreate", "Recreate containers"),
+                ("delete-container", "Delete containers — preserve workspace"),
+                ("logs", "Logs — show recent output"),
+                ("dashboard", "Dashboard — open Play manager"),
+            )
+        elif workspace_state == "stopped":
+            self.actions = (
+                ("start", "Start existing services"),
+                ("recreate", "Recreate containers"),
+                ("delete-container", "Delete containers — preserve workspace"),
+                ("logs", "Logs — show recent output"),
+                ("dashboard", "Dashboard — open Play manager"),
+            )
+        elif workspace_state == "ready":
+            self.actions = (
+                ("play", "Play — prepare and start"),
+                ("recreate", "Recreate containers"),
+                ("delete-container", "Delete containers — preserve workspace"),
+                ("logs", "Logs — show recent output"),
+                ("dashboard", "Dashboard — open Play manager"),
+            )
+        else:
+            self.actions = (
+                ("play", "Play — prepare and start"),
+                ("pull", "Pull competition images"),
+                ("dashboard", "Dashboard — open Play manager"),
+            )
 
     def compose(self) -> ComposeResult:
         with Vertical(id="play-dialog"):
             yield Label("Play actions", classes="dialog-title")
-            yield OptionList(*(label for _, label in self.ACTIONS), id="play-list")
+            yield OptionList(*(label for _, label in self.actions), id="play-list")
             yield Static("j/k or arrows move · Enter run · Esc cancel", classes="dialog-hint")
 
     def on_mount(self) -> None:
@@ -618,7 +635,7 @@ class PlayMenu(ModalScreen[str | None]):
 
     @on(OptionList.OptionSelected, "#play-list")
     def selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(self.ACTIONS[event.option_index][0])
+        self.dismiss(self.actions[event.option_index][0])
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -1032,7 +1049,7 @@ class NitroTUI(App[int]):
     }
     """
 
-    def __init__(self) -> None:
+    def __init__(self, manager_client: ManagerClient | None = None) -> None:
         super().__init__()
         self.register_theme(NAIJ_THEME)
         self.register_theme(MONO_THEME)
@@ -1055,6 +1072,13 @@ class NitroTUI(App[int]):
         self.task_generation = 0
         self.submission_generation = 0
         self._login_open = False
+        self.manager_client = manager_client
+        self.play_snapshot: dict[str, Any] = {}
+
+    def _manager(self) -> ManagerClient:
+        if self.manager_client is None:
+            self.manager_client = ManagerClient.from_state()
+        return self.manager_client
 
     def compose(self) -> ComposeResult:
         yield Static("Nitro AI Judge · Contest browser", id="header-line")
@@ -1820,14 +1844,46 @@ class NitroTUI(App[int]):
         generation = self.contest_generation
         org, comp = contest_ref(self.current_contest)
         try:
-            status = await asyncio.to_thread(
-                load_play_status, org, comp, logs=80
+            client = self._manager()
+            snapshot, log_value = await asyncio.gather(
+                asyncio.to_thread(client.competition, org, comp),
+                asyncio.to_thread(client.logs, org, comp, tail=80),
             )
             if generation != self.contest_generation:
                 return
+            self.play_snapshot = snapshot
+            status = {
+                **snapshot,
+                "state": snapshot.get("workspace_state") or "missing",
+                "manager_url": f"{client.base_url}/nitro/",
+                "jupyter_url": (
+                    f"{client.base_url}{snapshot['jupyter_url']}"
+                    if snapshot.get("jupyter_url")
+                    else None
+                ),
+                "proxy_url": (
+                    f"{client.base_url}{snapshot['proxy_url']}"
+                    if snapshot.get("proxy_url")
+                    else None
+                ),
+                "gpu": snapshot.get("gpu") or "manager-selected",
+                "images": ", ".join(
+                    str(item.get("name"))
+                    for item in (snapshot.get("images") or {}).values()
+                    if isinstance(item, dict) and item.get("name")
+                ),
+                "logs": log_value.get("logs") or "",
+            }
             self.query_one("#play-content", Static).update(play_details(status))
             self.set_status(f"Play: {status.get('state') or 'unknown'}", "success")
         except Exception as exc:
+            self.play_snapshot = {}
+            self.query_one("#play-content", Static).update(
+                "PLAY MANAGER UNAVAILABLE\n\n"
+                f"{exc}\n\nInstall or repair with:\n"
+                "naij play manager install --yes\n\n"
+                "Stable dashboard: http://localhost:51123/nitro/"
+            )
             self.set_status(f"Could not load Play status: {exc}", "error")
 
     def action_view(self, number: int) -> None:
@@ -2190,10 +2246,12 @@ class NitroTUI(App[int]):
 
     @work(group="play-menu", exclusive=True)
     async def play_menu_flow(self) -> None:
-        action = await self.push_screen_wait(PlayMenu())
+        action = await self.push_screen_wait(
+            PlayMenu(str(self.play_snapshot.get("workspace_state") or "missing"))
+        )
         if not action:
             return
-        if action == "down":
+        if action == "delete-container":
             org, comp = contest_ref(self.current_contest or {})
             confirmed = await self.push_screen_wait(
                 ConfirmScreen(
@@ -2214,63 +2272,43 @@ class NitroTUI(App[int]):
         self._show_active_view()
         self.set_status(f"Play {action}…")
         try:
-            if action == "up":
-                result = await asyncio.to_thread(
-                    cmd_play_up,
-                    org,
-                    comp,
-                    gpu=None,
-                    port=None,
-                    proxy_port=None,
-                    bind="127.0.0.1",
-                    pull="missing",
-                    wait_timeout=PLAY_WAIT_TIMEOUT,
-                    quiet=True,
-                )
-            elif action == "stop":
-                result = await asyncio.to_thread(
-                    cmd_play_stop, org, comp, quiet=True
-                )
-            elif action == "down":
-                result = await asyncio.to_thread(
-                    cmd_play_down,
-                    org,
-                    comp,
-                    volumes=False,
-                    force=True,
-                    quiet=True,
-                )
-            elif action in {"start", "restart"}:
-                await asyncio.to_thread(change_play_state, org, comp, action)
-                result = 0
-            elif action == "logs":
-                logs = await asyncio.to_thread(load_play_logs, org, comp, tail=200)
+            client = self._manager()
+            if action == "logs":
+                logs_value = await asyncio.to_thread(client.logs, org, comp, tail=200)
+                logs = str(logs_value.get("logs") or "")
                 content = Text("RECENT LOGS\n\n", style="bold")
                 content.append(logs or "No recent logs.")
                 content.append("\n\np actions · r refresh", style="dim")
                 self.query_one("#play-content", Static).update(content)
                 self.set_status("Play logs loaded.", "success")
                 return
-            elif action == "ps":
-                processes = await asyncio.to_thread(load_play_ps, org, comp)
-                content = Text("COMPOSE PROCESSES\n\n", style="bold")
-                content.append(processes or "No processes.")
-                content.append("\n\np actions · r refresh", style="dim")
-                self.query_one("#play-content", Static).update(content)
-                self.set_status("Play processes loaded.", "success")
-                return
             elif action == "open":
-                status = await asyncio.to_thread(load_play_status, org, comp)
-                url = status.get("jupyter_url")
-                if not url:
-                    raise RuntimeError("Play has no saved Jupyter URL")
+                open_info = await asyncio.to_thread(client.open_info, org, comp)
+                url = open_info.get("jupyter_url")
                 if not await asyncio.to_thread(webbrowser.open, str(url)):
                     raise RuntimeError(f"Open {url} manually")
-                result = 0
+                self.set_status("Jupyter opened.", "success")
+                return
+            elif action == "dashboard":
+                url = f"{client.base_url}/nitro/"
+                if not await asyncio.to_thread(webbrowser.open, url):
+                    raise RuntimeError(f"Open {url} manually")
+                self.set_status("Play dashboard opened.", "success")
+                return
             else:
-                raise RuntimeError(f"Unknown Play action: {action}")
-            if result:
-                raise RuntimeError(f"Play {action} failed")
+                accepted = await asyncio.to_thread(
+                    client.action,
+                    org,
+                    comp,
+                    action,
+                    pull="missing" if action in {"play", "recreate"} else None,
+                    wait_timeout=120 if action in {"play", "recreate"} else None,
+                )
+                await asyncio.to_thread(
+                    client.wait_operation,
+                    str(accepted["operation_id"]),
+                    timeout=600,
+                )
             self.set_status(f"Play {action} completed.", "success")
             self.refresh_play_status()
         except Exception as exc:

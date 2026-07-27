@@ -469,18 +469,29 @@ class CompletionTests(unittest.TestCase):
         )
         self.assertEqual(
             completion.candidates(["play", "logs", ""], context),
-            ["--follow", "--help", "-f"],
+            ["--follow", "--help", "--tail", "--yes", "-f"],
         )
         self.assertEqual(
             completion.candidates(["play", "logs", "--follow", ""], context),
-            ["--help"],
+            ["--help", "--tail", "--yes"],
         )
-        down = completion.candidates(["play", "down", ""], context)
-        self.assertIn("--volumes", down)
-        self.assertNotIn("--gpu", down)
+        deletion = completion.candidates(
+            ["play", "delete-workspace", ""], context
+        )
+        self.assertIn("--force", deletion)
+        self.assertNotIn("--gpu", deletion)
         up = completion.candidates(["play", "Acme/Open", ""], context)
         self.assertIn("--gpu", up)
         self.assertNotIn("--follow", up)
+        self.assertIn(
+            "install",
+            completion.candidates(["play", "manager", ""], context),
+        )
+        install = completion.candidates(
+            ["play", "manager", "install", ""], context
+        )
+        self.assertIn("--bind", install)
+        self.assertIn("--tls-cert", install)
 
     def test_completion_with_supplied_context_performs_no_state_or_network_io(self) -> None:
         context = self.context()

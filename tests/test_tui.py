@@ -46,15 +46,43 @@ TASKS = [
     {"id": "backend-9", "title": "Second Task", "synopsis": "Second synopsis"},
 ]
 PLAY_STATUS = {
-    "state": "running",
-    "jupyter_url": "http://localhost:8888",
-    "proxy_url": "http://localhost:9000",
-    "gpu": "auto (effective gpu)",
-    "images": "notebook, proxy",
+    "reference": "org/contest",
+    "workspace_state": "running",
+    "service_health": "healthy",
+    "jupyter_url": "/nitro/competitions/org/contest/jupyter/",
+    "proxy_url": "/nitro/competitions/org/contest/proxy/",
+    "gpu": "enabled",
+    "images": {
+        "notebook": {"name": "notebook", "state": "ready"},
+        "proxy": {"name": "proxy", "state": "ready"},
+    },
     "workspace": "workspace",
-    "workdir": "/tmp/play",
-    "logs": "recent log",
 }
+
+
+class FakeManager:
+    base_url = "http://localhost:51123"
+
+    def __init__(self) -> None:
+        self.actions: list[str] = []
+
+    def competition(self, org: str, competition: str) -> dict:
+        return dict(PLAY_STATUS)
+
+    def logs(self, org: str, competition: str, *, tail: int = 80) -> dict:
+        return {"logs": "recent log"}
+
+    def action(self, org: str, competition: str, action: str, **options: object) -> dict:
+        self.actions.append(action)
+        return {"operation_id": f"operation-{action}"}
+
+    def wait_operation(self, operation_id: str, *, timeout: float = 600) -> dict:
+        return {"status": "complete", "result": dict(PLAY_STATUS)}
+
+    def open_info(self, org: str, competition: str) -> dict:
+        return {
+            "jupyter_url": "http://localhost:51123/nitro/competitions/org/contest/jupyter/"
+        }
 
 
 def invoke(argv: list[str]) -> tuple[int, str]:
@@ -68,6 +96,11 @@ def invoke(argv: list[str]) -> tuple[int, str]:
 
 
 class TUIEntrypointTests(unittest.TestCase):
+    def test_ready_workspace_offers_play_and_recreate_without_start(self) -> None:
+        actions = [action for action, _ in tui.PlayMenu("ready").actions]
+        self.assertEqual(actions[:2], ["play", "recreate"])
+        self.assertNotIn("start", actions)
+
     def test_tui_help_dispatch_and_mouse_enabled_runtime(self) -> None:
         result, output = invoke(["tui", "--help"])
         self.assertEqual(result, 0)
@@ -265,7 +298,7 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
             patch.object(tui, "load_submissions", return_value=([], 1))
         )
         stack.enter_context(
-            patch.object(tui, "load_play_status", return_value=PLAY_STATUS)
+            patch.object(tui.ManagerClient, "from_state", return_value=FakeManager())
         )
         return stack
 
@@ -675,17 +708,13 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
     async def test_every_play_action_and_down_confirmation_use_keys(self) -> None:
         state.update_cache("contests", "all", [CONTEST])
         state.set_contest(CONTEST)
+        manager = FakeManager()
         with (
             self.auth_patches(contests=[CONTEST]),
-            patch.object(tui, "cmd_play_up", return_value=0) as up,
-            patch.object(tui, "cmd_play_stop", return_value=0) as stop,
-            patch.object(tui, "cmd_play_down", return_value=0) as down,
-            patch.object(tui, "change_play_state") as change,
-            patch.object(tui, "load_play_logs", return_value="logs") as logs,
-            patch.object(tui, "load_play_ps", return_value="ps") as ps,
+            patch.object(tui.ManagerClient, "from_state", return_value=manager),
             patch.object(tui.webbrowser, "open", return_value=True) as opened,
         ):
-            app = tui.NitroTUI()
+            app = tui.NitroTUI(manager_client=manager)
             async with app.run_test(size=(120, 34)) as pilot:
                 await pilot.pause(0.2)
                 await pilot.press("4")
@@ -707,23 +736,19 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
                         await pilot.press("y")
                     await pilot.pause(0.15)
 
-                await choose(0)  # up
-                await choose(1)  # start
-                await choose(2)  # stop
-                await choose(3)  # restart
-                await choose(4, confirm=True)  # down
+                await choose(0)  # open
+                await choose(1)  # stop
+                await choose(2)  # restart
+                await choose(3)  # recreate
+                await choose(4, confirm=True)  # delete containers
                 await choose(5)  # logs
-                await choose(6)  # ps
-                await choose(7)  # open
+                await choose(6)  # dashboard
 
-                self.assertEqual(up.call_count, 1)
-                self.assertEqual(stop.call_count, 1)
-                self.assertEqual(down.call_count, 1)
-                change.assert_any_call("org", "contest", "start")
-                change.assert_any_call("org", "contest", "restart")
-                logs.assert_called()
-                ps.assert_called()
-                opened.assert_called_once_with("http://localhost:8888")
+                self.assertEqual(
+                    manager.actions,
+                    ["stop", "restart", "recreate", "delete-container"],
+                )
+                self.assertEqual(opened.call_count, 2)
 
     async def test_ctrl_d_quits(self) -> None:
         with self.auth_patches():

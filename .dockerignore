@@ -1,0 +1,13 @@
+.git
+.github
+.agents
+.venv
+build
+dist
+manager-state
+skills-lock.json
+tests
+wiki
+*.egg-info
+**/__pycache__
+**/*.pyc

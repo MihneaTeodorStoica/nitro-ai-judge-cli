@@ -435,6 +435,18 @@ def save_token_state(tokens: dict[str, Any], username: str | None = None) -> Non
     state = normalize_tokens(tokens, username)
     state["timestamp"] = time.time()
     save_state(state)
+    try:
+        from .play_manager_lifecycle import (
+            load_manager_config,
+            sync_manager_credentials,
+        )
+
+        if load_manager_config() is not None:
+            sync_manager_credentials(required=False)
+    except Exception:
+        # Authentication remains usable when the optional local manager is down.
+        # Its dashboard reports that synchronization is required.
+        pass
 
 def refresh_saved_tokens(state: dict[str, Any]) -> dict[str, Any] | None:
     refresh_token = state.get("refresh_token") or state.get("refreshToken")

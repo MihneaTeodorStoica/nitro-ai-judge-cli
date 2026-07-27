@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="csrf-token" content="__CSRF_TOKEN__">
+  <title>Nitro Play</title>
+  <link rel="stylesheet" href="/nitro/assets/app.css">
+  <script src="/nitro/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div class="route-mark" aria-hidden="true"><span>/</span>nitro</div>
+    <div class="title-block">
+      <p class="eyebrow">Local competition runtime</p>
+      <h1>Play manager</h1>
+    </div>
+    <div class="manager-state"><span class="state-dot" aria-hidden="true"></span><span id="manager-status">Connecting</span></div>
+    <button class="icon-button" id="theme-toggle" type="button" aria-label="Switch color theme">Dark</button>
+  </header>
+
+  <main>
+    <section class="toolbar" aria-label="Competition filters">
+      <label class="search-field">
+        <span>Find a competition</span>
+        <input id="search" type="search" autocomplete="off" placeholder="Organization or competition">
+      </label>
+      <label>
+        <span>Image</span>
+        <select id="image-filter"><option value="">Any image state</option><option>ready</option><option>missing</option><option>pulling</option><option>error</option></select>
+      </label>
+      <label>
+        <span>Workspace</span>
+        <select id="workspace-filter"><option value="">Any workspace state</option><option>running</option><option>stopped</option><option>ready</option><option>missing</option><option>error</option></select>
+      </label>
+      <button type="button" class="quiet-button" id="refresh">Refresh</button>
+    </section>
+
+    <p class="notice" id="sync-notice" hidden>Nitro login required. <button type="button" class="quiet-button" id="nitro-login-open">Sign in</button></p>
+    <p class="result-count" id="result-count" aria-live="polite">Loading competitions…</p>
+
+    <section class="ledger" aria-label="Competitions">
+      <table>
+        <thead><tr><th scope="col">Competition</th><th scope="col">Image</th><th scope="col">Workspace</th><th scope="col">Health</th><th scope="col"><span class="visually-hidden">Actions</span></th></tr></thead>
+        <tbody id="competition-rows"></tbody>
+      </table>
+      <div class="empty-state" id="empty-state" hidden>
+        <h2>No matching competitions</h2>
+        <p>Clear a filter or synchronize your Nitro login.</p>
+      </div>
+    </section>
+    <nav class="pagination" id="pagination" aria-label="Competition pages" hidden>
+      <button type="button" class="quiet-button" id="previous-page">Previous</button>
+      <span id="page-status" aria-live="polite"></span>
+      <button type="button" class="quiet-button" id="next-page">Next</button>
+    </nav>
+  </main>
+
+  <template id="competition-row-template">
+    <tr class="competition-row">
+      <td data-label="Competition"><strong class="competition-title"></strong><span class="competition-ref"></span></td>
+      <td data-label="Image"><span class="status image-status"></span></td>
+      <td data-label="Workspace"><span class="status workspace-status"></span></td>
+      <td data-label="Health"><span class="status health-status"></span></td>
+      <td data-label="Actions" class="actions"></td>
+    </tr>
+    <tr class="operation-row" hidden><td colspan="5"><div class="operation"><div><strong class="operation-stage"></strong><span class="operation-message"></span></div><progress max="100"></progress><details><summary>Recent logs</summary><pre class="operation-logs"></pre></details></div></td></tr>
+  </template>
+
+  <dialog id="delete-dialog">
+    <form method="dialog" id="delete-form">
+      <p class="eyebrow">Permanent deletion</p>
+      <h2>Delete workspace data?</h2>
+      <p>This removes the private workspace volume. Images remain available.</p>
+      <label><span>Type <strong id="delete-reference"></strong> to confirm</span><input id="delete-confirmation" autocomplete="off"></label>
+      <p class="dialog-error" id="delete-error" aria-live="polite"></p>
+      <div class="dialog-actions"><button value="cancel" class="quiet-button">Cancel</button><button value="confirm" class="danger-button">Delete workspace</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="nitro-login-dialog">
+    <form id="nitro-login-form">
+      <p class="eyebrow">Nitro Judge</p>
+      <h2>Sign in to continue</h2>
+      <label><span>Username</span><input id="nitro-login-username" autocomplete="username" required></label>
+      <label><span>Password</span><input id="nitro-login-password" type="password" autocomplete="current-password" required></label>
+      <p class="dialog-error" id="nitro-login-error" aria-live="polite"></p>
+      <div class="dialog-actions"><button type="button" class="quiet-button" id="nitro-login-cancel">Cancel</button><button type="submit" class="primary-button">Sign in</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

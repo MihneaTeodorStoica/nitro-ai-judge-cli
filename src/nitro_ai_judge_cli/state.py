@@ -36,6 +36,10 @@ class StatePaths:
     def play(self) -> str:
         return os.path.join(self.root, "contestant-cloud")
 
+    @property
+    def play_manager(self) -> str:
+        return os.path.join(self.root, "play-manager")
+
 
 _warned: set[str] = set()
 _cli_state_dir: str | None = None

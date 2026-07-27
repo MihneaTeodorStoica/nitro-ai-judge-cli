@@ -49,7 +49,7 @@ from .submissions import (
 
 LEGACY_WARNING = (
     "warning: `nitro-cli` is deprecated; use `naij`. "
-    "It will be removed in 3.0.0."
+    "It will be removed in 4.0.0."
 )
 
 
@@ -507,12 +507,30 @@ def main(argv: list[str] | None = None) -> int:
     if not args.cmd:
         return run_shell(lambda words: main(words))
     if args.cmd == "login":
-        return cmd_login(args.username, None)
+        result = cmd_login(args.username, None)
+        if result == 0:
+            from .play_manager_lifecycle import (
+                load_manager_config,
+                sync_manager_credentials,
+            )
+
+            if load_manager_config() is not None:
+                try:
+                    sync_manager_credentials(required=False)
+                except Exception as exc:
+                    print(
+                        f"warning: Play manager login synchronization failed ({exc}); "
+                        "run `naij play manager sync-credentials`",
+                        file=sys.stderr,
+                    )
+        return result
     if args.cmd == "tui":
         from .tui import run_tui
 
         return run_tui()
     if args.cmd == "play":
+        if args.play_action == "manager":
+            return cmd_play(args)
         context = load_context()
         inherited = not getattr(args, "competition", None)
         if inherited:
