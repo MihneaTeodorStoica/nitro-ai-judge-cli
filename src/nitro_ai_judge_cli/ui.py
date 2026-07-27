@@ -37,6 +37,9 @@ class Spinner:
         self.thread.start()
         return self
 
+    def update(self, label: str) -> None:
+        self.label = label
+
     def stop(self) -> None:
         self.stop_event.set()
         if self.thread is not None:

@@ -21,7 +21,7 @@ SHELL_COMMANDS = (
 GLOBAL_OPTIONS = ("--api-url", "--submission-proxy", "--state-dir", "--help")
 PLAY_ACTIONS = (
     "play", "pull", "start", "stop", "restart", "recreate",
-    "delete-container", "delete-workspace", "logs", "status", "open", "manager",
+    "delete-container", "delete-image", "delete-workspace", "logs", "status", "open", "manager",
 )
 MANAGER_ACTIONS = (
     "install", "update", "status", "open", "start", "stop", "restart",
@@ -70,6 +70,7 @@ PLAY_OPTION_GROUPS = {
     "stop": (("--yes",), ("--help",)),
     "restart": (("--yes",), ("--help",)),
     "delete-container": (("--yes",), ("--help",)),
+    "delete-image": (("--yes",), ("--help",)),
     "status": (("--yes",), ("--help",)),
     "open": (("--yes",), ("--help",)),
     "manager-install": (

@@ -14,9 +14,17 @@ naij tui
 The TUI can start before login and will prompt for credentials when needed.
 Selections are shared with the regular `naij` shell and commands.
 
-> **Help wanted:** The Dockerized Play manager is under active development.
-> Docker Desktop testing, dashboard feedback, and migration reports are welcome
-> on the `feat/play-manager` branch.
+## 3.0 highlights
+
+- `naij tui` provides a keyboard-first, full-screen contest cockpit.
+- `naij play manager install` starts the local Docker-backed Play manager; its
+  dashboard updates live when NAIJ or Docker changes a managed competition.
+- The manager keeps Play services private behind stable Jupyter and submission
+  proxy routes, with operation progress, redacted logs, cancellation, and
+  offline recovery instructions.
+- **Disconnect Nitro** removes only credentials saved inside the manager.
+  LAN-only **Log out** expires only the current browser session. Neither action
+  removes CLI credentials or workspaces.
 
 ## Requirements
 
@@ -107,6 +115,10 @@ retries once, and opens the login form if recovery fails. A real `403` after
 refresh remains an access-denied error rather than reopening login repeatedly.
 Loaded task statements are merged into the task cache, so reopening a task can
 show its full statement before the next network refresh.
+
+Release screenshots and the keyboard walkthrough will be added under
+`docs/assets/` with the `v3.0.0` release capture; the recording contract is in
+[`docs/assets/README.md`](docs/assets/README.md).
 
 ## Basic usage
 
@@ -243,6 +255,7 @@ naij play start algolymp/algolymp-preojia-ix-x
 naij play restart algolymp/algolymp-preojia-ix-x
 naij play recreate algolymp/algolymp-preojia-ix-x
 naij play delete-container algolymp/algolymp-preojia-ix-x
+naij play delete-image algolymp/algolymp-preojia-ix-x
 naij play delete-workspace algolymp/algolymp-preojia-ix-x --force
 ```
 
@@ -258,6 +271,8 @@ Lifecycle behavior:
 - Explicit `stop` remains stopped until the user starts or recreates it.
 - `delete-container` removes containers and the private project network but
   preserves `/home/jovyan`.
+- `delete-image` removes only that competition's cached image tags after its
+  containers are deleted; workspace data is preserved.
 - `delete-workspace` requires the full `organization/competition` reference in
   interactive use. Automation must pass `--force`.
 - `logs` is redacted before it leaves the manager; `logs --follow` streams it.

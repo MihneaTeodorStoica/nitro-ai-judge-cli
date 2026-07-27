@@ -750,6 +750,38 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertEqual(opened.call_count, 2)
 
+    async def test_delete_image_menu_defaults_to_cancel(self) -> None:
+        state.update_cache("contests", "all", [CONTEST])
+        state.set_contest(CONTEST)
+        manager = FakeManager()
+        manager.competition = lambda _org, _comp: {
+            **PLAY_STATUS,
+            "workspace_state": "ready",
+            "image_state": "ready",
+        }
+        with (
+            self.auth_patches(contests=[CONTEST]),
+            patch.object(tui.ManagerClient, "from_state", return_value=manager),
+        ):
+            app = tui.NitroTUI(manager_client=manager)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause(0.2)
+                await pilot.press("4")
+                await pilot.pause(0.1)
+                await pilot.press("p")
+                await pilot.pause()
+                menu = app.screen
+                self.assertIsInstance(menu, tui.PlayMenu)
+                actions = [action for action, _ in menu.actions]
+                index = actions.index("delete-image")
+                await pilot.press(*(["down"] * index), "enter")
+                await pilot.pause()
+                self.assertIsInstance(app.screen, tui.ConfirmScreen)
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+
+        self.assertEqual(manager.actions, [])
+
     async def test_ctrl_d_quits(self) -> None:
         with self.auth_patches():
             app = tui.NitroTUI()

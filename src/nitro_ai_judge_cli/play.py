@@ -27,6 +27,7 @@ from .play_protocol import (
     WireError,
     validate_competition,
 )
+from .ui import Spinner
 
 
 PLAY_WAIT_TIMEOUT = 120
@@ -40,6 +41,7 @@ PLAY_ACTIONS = {
     "recreate",
     "down",
     "delete-container",
+    "delete-image",
     "delete-workspace",
     "logs",
     "ps",
@@ -116,11 +118,25 @@ def perform_play_action(
     client = client or _client(yes=yes)
     accepted = client.action(org, competition, action, **options)
     operation_id = str(accepted["operation_id"])
-    operation = client.wait_operation(
-        operation_id,
-        timeout=timeout,
-        progress=None if quiet else _progress,
-    )
+    spinner = None
+    progress = None if quiet else _progress
+    if not quiet and sys.stdout.isatty():
+        spinner = Spinner("Operation queued", stream=sys.stdout).start()
+
+        def progress(event: dict[str, Any]) -> None:
+            message = str(event.get("message") or "")
+            if message:
+                spinner.update(message)
+
+    try:
+        operation = client.wait_operation(
+            operation_id,
+            timeout=timeout,
+            progress=progress,
+        )
+    finally:
+        if spinner is not None:
+            spinner.stop()
     return operation.get("result") or {}
 
 
@@ -353,8 +369,21 @@ def cmd_play(args: argparse.Namespace) -> int:
             return cmd_manager(args)
         org, competition = parse_competition_ref(args.competition)
         _legacy_port_guidance(args)
-        client = _client(yes=getattr(args, "yes", False))
         action = args.play_action
+        if action == "delete-image" and not args.yes:
+            if not sys.stdin.isatty():
+                raise RuntimeError(
+                    "Image deletion requires --yes in non-interactive use"
+                )
+            reference = f"{org}/{competition}"
+            confirmed = input(
+                f"Delete cached competition images for {reference} "
+                "(workspace preserved)? [y/N] "
+            ).strip().lower()
+            if confirmed != "y":
+                print("Aborted.")
+                return 1
+        client = _client(yes=getattr(args, "yes", False))
         if action == "up":
             action = "play"
         elif action == "down":
@@ -461,7 +490,11 @@ def positive_seconds(value: str) -> int:
 
 def _competition_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("competition", nargs="*", help="[<org>/<comp> | <org> <comp>]")
-    parser.add_argument("--yes", action="store_true", help="Install or repair the manager without prompting")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Approve prompts and install or repair the manager if needed",
+    )
 
 
 def _runtime_options(parser: argparse.ArgumentParser) -> None:
@@ -497,6 +530,7 @@ def populate_play_actions(actions: argparse._SubParsersAction) -> None:
         ("ps", "Show a compact runtime snapshot"),
         ("open", "Open the stable Jupyter URL"),
         ("delete-container", "Delete containers and private network, preserving workspace"),
+        ("delete-image", "Delete cached competition images, preserving workspace"),
     ):
         command = actions.add_parser(name, help=help_text)
         _competition_argument(command)

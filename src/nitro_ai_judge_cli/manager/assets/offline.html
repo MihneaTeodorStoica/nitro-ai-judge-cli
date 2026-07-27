@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Play manager stopped</title>
+  <link rel="icon" type="image/svg+xml" href="/nitro/assets/logo.svg">
+  <link rel="stylesheet" href="/nitro/assets/app.css?v=4">
+</head>
+<body class="login-page">
+  <main class="login-panel offline-panel">
+    <img class="brand-logo" src="/nitro/assets/logo.svg" alt="">
+    <p class="eyebrow">Connection unavailable</p>
+    <h1>Play manager is stopped</h1>
+    <p>Run this command on the machine hosting the Play manager, then retry this page. Your competitions and workspaces are unchanged.</p>
+    <div class="offline-command">
+      <code id="start-command">naij play manager start</code>
+      <button type="button" class="primary-button" id="copy-start-command">Copy start command</button>
+    </div>
+    <div class="offline-actions">
+      <a href="/nitro/">Retry connection</a>
+      <span id="copy-status" role="status" aria-live="polite"></span>
+    </div>
+  </main>
+  <script src="/nitro/assets/offline.js?v=4" defer></script>
+</body>
+</html>

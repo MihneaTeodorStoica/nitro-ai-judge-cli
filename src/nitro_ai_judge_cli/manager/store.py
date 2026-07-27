@@ -99,6 +99,15 @@ class ManagerStore:
         self, key: str, organization: str, competition: str, snapshot: dict[str, Any]
     ) -> None:
         with self.transaction() as db:
+            existing = db.execute(
+                "SELECT snapshot FROM competitions WHERE key=?", (key,)
+            ).fetchone()
+            snapshot = dict(snapshot)
+            if existing:
+                previous = json.loads(existing["snapshot"])
+                for field in ("title", "featured", "competitionStart"):
+                    if field not in snapshot and field in previous:
+                        snapshot[field] = previous[field]
             db.execute(
                 """
                 INSERT INTO competitions(key, organization, competition, snapshot, updated_at)
@@ -146,6 +155,17 @@ class ManagerStore:
                 SELECT * FROM operations WHERE competition_key=?
                     AND status IN ('queued', 'running')
                 ORDER BY created_at DESC LIMIT 1
+                """,
+                (key,),
+            ).fetchone()
+        return self._operation_row(row) if row else None
+
+    def latest_operation(self, key: str) -> dict[str, Any] | None:
+        with self.lock:
+            row = self.connection.execute(
+                """
+                SELECT * FROM operations WHERE competition_key=?
+                ORDER BY created_at DESC, id DESC LIMIT 1
                 """,
                 (key,),
             ).fetchone()

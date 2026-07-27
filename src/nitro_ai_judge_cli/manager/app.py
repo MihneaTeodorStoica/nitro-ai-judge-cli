@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from html import escape
 from importlib import resources
 import hmac
 import json
@@ -30,7 +31,7 @@ from ..play_protocol import (
     competition_key,
     validate_competition,
 )
-from .backend import Backend, DockerBackend, redact
+from .backend import Backend, DockerBackend, LABEL_PREFIX, redact
 from .store import ManagerStore
 
 
@@ -51,6 +52,11 @@ HOP_HEADERS = {
 }
 JUDGE_API_URL = "https://judge.nitro-ai.org/api"
 REMOTE_COMPETITION_PAGE_SIZE = 200
+SESSION_COOKIE = "naij_manager_session"
+SESSION_SECONDS = 12 * 3600
+SSE_KEEPALIVE_SECONDS = 15
+SSE_QUEUE_SIZE = 1
+DOCKER_EVENT_DEBOUNCE = 0.3
 WORKSPACE_SORT = {
     "running": 0,
     "stopped": 1,
@@ -123,9 +129,9 @@ async def security_middleware(request: web.Request, handler: Any) -> web.StreamR
         if bearer and hmac.compare_digest(bearer, app["api_token"]):
             request["auth_kind"] = "cli"
         else:
-            session_id = request.cookies.get("naij_manager_session", "")
-            session = app["sessions"].get(session_id)
-            if not session or session["expires"] < time.time():
+            session_id = request.cookies.get(SESSION_COOKIE, "")
+            session = _browser_session(app, session_id)
+            if not session:
                 direct_loopback_open = (
                     not app["lan"]
                     and request.method == "GET"
@@ -173,7 +179,7 @@ async def security_middleware(request: web.Request, handler: Any) -> web.StreamR
     new_session_id = request.get("new_session_id")
     if new_session_id:
         response.set_cookie(
-            "naij_manager_session",
+            SESSION_COOKIE,
             new_session_id,
             httponly=True,
             secure=app["public_origin"].startswith("https://"),
@@ -186,32 +192,57 @@ async def security_middleware(request: web.Request, handler: Any) -> web.StreamR
 
 def _new_session(app: web.Application) -> tuple[str, dict[str, Any]]:
     session_id = secrets.token_urlsafe(32)
-    session = {"csrf": secrets.token_urlsafe(32), "expires": time.time() + 12 * 3600}
+    session = {"csrf": secrets.token_urlsafe(32), "expires": time.time() + SESSION_SECONDS}
     app["sessions"][session_id] = session
     return session_id, session
 
 
+def _browser_session(app: web.Application, session_id: str) -> dict[str, Any] | None:
+    session = app["sessions"].get(session_id)
+    if session and session["expires"] >= time.time():
+        return session
+    if session_id:
+        app["sessions"].pop(session_id, None)
+    return None
+
+
+def _login_page(error: str = "", *, status: int = 200) -> web.Response:
+    html = resources.files(__package__).joinpath("assets/login.html").read_text()
+    return web.Response(
+        text=html.replace("__LOGIN_ERROR__", escape(error)),
+        status=status,
+        content_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 async def dashboard(request: web.Request) -> web.Response:
     app = request.app
-    session_id = request.cookies.get("naij_manager_session", "")
-    session = app["sessions"].get(session_id)
+    session_id = request.cookies.get(SESSION_COOKIE, "")
+    session = _browser_session(app, session_id)
     if app["lan"] and not session:
-        html = resources.files(__package__).joinpath("assets/login.html").read_text()
-        return web.Response(text=html, content_type="text/html")
+        return _login_page(
+            "Your dashboard session expired. Sign in again." if session_id else ""
+        )
     if not session:
         session_id, session = _new_session(app)
     html = resources.files(__package__).joinpath("assets/index.html").read_text()
     response = web.Response(
-        text=html.replace("__CSRF_TOKEN__", session["csrf"]), content_type="text/html"
+        text=(
+            html.replace("__CSRF_TOKEN__", session["csrf"])
+            .replace("__LAN_LOGOUT_HIDDEN__", "" if app["lan"] else "hidden")
+        ),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store"},
     )
     response.set_cookie(
-        "naij_manager_session",
+        SESSION_COOKIE,
         session_id,
         httponly=True,
         secure=app["public_origin"].startswith("https://"),
         samesite="Strict",
         path=f"{BASE_PATH}/",
-        max_age=12 * 3600,
+        max_age=SESSION_SECONDS,
     )
     return response
 
@@ -228,41 +259,53 @@ async def login(request: web.Request) -> web.Response:
     attempts = [value for value in app["login_attempts"].get(peer, []) if value > time.time() - 60]
     app["login_attempts"][peer] = attempts
     if len(attempts) >= 5:
-        raise WireError(
-            ErrorType.SECURITY_ERROR.value,
-            "Too many login attempts; wait one minute and retry",
-            status=429,
+        return _login_page(
+            "Too many login attempts. Wait one minute and retry.", status=429
         )
     data = await request.post()
     token = str(data.get("token") or "")
     if not token or not hmac.compare_digest(token, app["dashboard_token"]):
         attempts.append(time.time())
-        raise WireError(
-            ErrorType.AUTHENTICATION_REQUIRED.value,
-            "Dashboard login token is invalid",
-            status=401,
-        )
+        return _login_page("Dashboard login token is invalid.", status=401)
     session_id, _ = _new_session(app)
     response = web.HTTPFound(f"{BASE_PATH}/")
     response.set_cookie(
-        "naij_manager_session",
+        SESSION_COOKIE,
         session_id,
         httponly=True,
         secure=True,
         samesite="Strict",
         path=f"{BASE_PATH}/",
-        max_age=12 * 3600,
+        max_age=SESSION_SECONDS,
     )
     raise response
 
 
 async def asset(request: web.Request) -> web.Response:
     name = request.match_info["name"]
-    if name not in {"app.css", "app.js"}:
+    content_types = {
+        "app.css": "text/css",
+        "app.js": "application/javascript",
+        "offline.html": "text/html",
+        "offline.js": "application/javascript",
+        "sw.js": "application/javascript",
+        "logo.svg": "image/svg+xml",
+        "inter-latin.woff2": "font/woff2",
+        "inter-latin-ext.woff2": "font/woff2",
+        "lexend-deca-latin.woff2": "font/woff2",
+        "lexend-deca-latin-ext.woff2": "font/woff2",
+    }
+    if name not in content_types:
         raise web.HTTPNotFound()
     content = resources.files(__package__).joinpath(f"assets/{name}").read_bytes()
-    content_type = "text/css" if name.endswith(".css") else "application/javascript"
-    return web.Response(body=content, content_type=content_type)
+    response = web.Response(body=content, content_type=content_types[name])
+    if name in {"app.css", "app.js", "sw.js"}:
+        response.headers["Cache-Control"] = "no-cache"
+    elif name.endswith(".woff2") or name == "logo.svg":
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    if name == "sw.js":
+        response.headers["Service-Worker-Allowed"] = f"{BASE_PATH}/"
+    return response
 
 
 async def info(_: web.Request) -> web.Response:
@@ -286,16 +329,57 @@ async def health(request: web.Request) -> web.Response:
     return web.json_response({"status": status}, status=200 if status == "healthy" else 503)
 
 
+def _publish_refresh(app: web.Application) -> None:
+    for queue in tuple(app["event_subscribers"]):
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        queue.put_nowait("refresh")
+
+
+def _semantic_snapshot(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _semantic_snapshot(item)
+            for key, item in value.items()
+            if key not in {"updated_at", "created_at", "timestamp", "explicit_stopped"}
+        }
+    if isinstance(value, list):
+        return [_semantic_snapshot(item) for item in value]
+    return value
+
+
+def _upsert_snapshot(
+    app: web.Application,
+    key: str,
+    organization: str,
+    competition: str,
+    snapshot: dict[str, Any],
+    *,
+    notify: bool = True,
+) -> bool:
+    previous = app["store"].competition(key) or {}
+    merged = dict(snapshot)
+    for field in ("title", "featured", "competitionStart"):
+        if field not in merged and field in previous:
+            merged[field] = previous[field]
+    if _semantic_snapshot(previous) == _semantic_snapshot(merged):
+        return False
+    app["store"].upsert_competition(key, organization, competition, merged)
+    if notify:
+        _publish_refresh(app)
+    return True
+
+
 async def _refresh_runtime(app: web.Application) -> list[dict[str, Any]]:
     backend: Any = app["backend"]
     discover = getattr(backend, "discover", None)
     if discover is not None:
         for snapshot in await discover():
-            snapshot = {
-                **(app["store"].competition(snapshot["reference"]) or {}),
-                **snapshot,
-            }
-            app["store"].upsert_competition(
+            _upsert_snapshot(
+                app,
                 snapshot["reference"],
                 snapshot["organization"],
                 snapshot["competition"],
@@ -319,29 +403,50 @@ async def _remote_competitions(
             _remote_competition_pages(session, base, headers, "true"),
             _remote_competition_pages(session, base, headers, "false"),
         )
-    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
-        return [], False
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+        raise WireError(
+            ErrorType.OPERATION_FAILED.value,
+            "Could not refresh competitions from Nitro Judge",
+            stage="refreshing",
+            status=502,
+        ) from exc
     statuses = {featured_status, other_status}
     if 401 in statuses and allow_refresh and credentials.get("refresh_token"):
-        async with session.post(
-            f"{base}/auth/refreshToken",
-            data={"refreshToken": credentials["refresh_token"]},
-        ) as refreshed:
-            if refreshed.status != 200:
-                return [], True
-            tokens = await refreshed.json()
-            credentials["access_token"] = (
-                tokens.get("access_token") or tokens.get("accessToken") or ""
-            )
-            credentials["refresh_token"] = (
-                tokens.get("refresh_token")
-                or tokens.get("refreshToken")
-                or credentials["refresh_token"]
-            )
-            app["store"].put_credentials(credentials)
+        try:
+            async with session.post(
+                f"{base}/auth/refreshToken",
+                data={"refreshToken": credentials["refresh_token"]},
+            ) as refreshed:
+                if refreshed.status != 200:
+                    return [], True
+                tokens = await refreshed.json()
+                credentials["access_token"] = (
+                    tokens.get("access_token") or tokens.get("accessToken") or ""
+                )
+                credentials["refresh_token"] = (
+                    tokens.get("refresh_token")
+                    or tokens.get("refreshToken")
+                    or credentials["refresh_token"]
+                )
+                app["store"].put_credentials(credentials)
+                _publish_refresh(app)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+            raise WireError(
+                ErrorType.OPERATION_FAILED.value,
+                "Could not refresh the Nitro Judge login",
+                stage="refreshing",
+                status=502,
+            ) from exc
         return await _remote_competitions(app, allow_refresh=False)
     if statuses != {200}:
-        return [], bool(statuses & {401, 403})
+        if statuses & {401, 403}:
+            return [], True
+        raise WireError(
+            ErrorType.OPERATION_FAILED.value,
+            "Nitro Judge could not refresh the competition list",
+            stage="refreshing",
+            status=502,
+        )
     return (
         [{**item, "featured": False} for item in other]
         + [{**item, "featured": True} for item in featured],
@@ -391,19 +496,36 @@ async def _remote_competition_pages(
 
 def _competition_sort_key(
     item: dict[str, Any],
-) -> tuple[int, int, int, int, int, str]:
+) -> tuple[int, int, int, int, int, float, str]:
+    operation = item.get("operation")
+    ongoing = isinstance(operation, dict) and operation.get("status") in {
+        "queued",
+        "running",
+    }
+    image_missing = item.get("image_state") != "ready"
+    started = item.get("competitionStart")
     return (
-        item.get("image_state") != "ready",
-        item.get("workspace_state") == "missing",
-        not bool(item.get("featured")),
+        not ongoing,
+        image_missing,
+        not bool(item.get("featured")) if image_missing else False,
         WORKSPACE_SORT.get(str(item.get("workspace_state")), len(WORKSPACE_SORT)),
         HEALTH_SORT.get(str(item.get("service_health")), len(HEALTH_SORT)),
+        -float(started)
+        if image_missing
+        and isinstance(started, (int, float))
+        and not isinstance(started, bool)
+        else float("inf") if image_missing else 0,
         str(item.get("reference") or "").casefold(),
     )
 
 
 async def competitions(request: web.Request) -> web.Response:
-    local = await _refresh_runtime(request.app)
+    cached = request.query.get("cached") == "true"
+    local = (
+        request.app["store"].competitions()
+        if cached
+        else await _refresh_runtime(request.app)
+    )
     merged = {item["reference"]: item for item in local if item.get("reference")}
     sync_required = request.app["store"].credentials() is None
     if request.query.get("refresh") == "true":
@@ -423,15 +545,23 @@ async def competitions(request: web.Request) -> web.Response:
                 "reference": key,
                 "title": item.get("title") or existing.get("title") or competition,
                 "featured": bool(item.get("featured")),
+                "competitionStart": item.get(
+                    "competitionStart", existing.get("competitionStart")
+                ),
                 "image_state": existing.get("image_state", "missing"),
                 "workspace_state": existing.get("workspace_state", "missing"),
                 "service_health": existing.get("service_health", "unknown"),
             }
             merged[key] = snapshot
-            request.app["store"].upsert_competition(key, org, competition, snapshot)
+            _upsert_snapshot(request.app, key, org, competition, snapshot)
+    for item in merged.values():
+        operation = request.app["store"].latest_operation(item["reference"])
+        if operation:
+            item["operation"] = operation
+    ordered = sorted(merged.values(), key=_competition_sort_key)
     return web.json_response(
         {
-            "competitions": sorted(merged.values(), key=_competition_sort_key),
+            "competitions": ordered,
             "login_sync_required": sync_required,
         }
     )
@@ -447,8 +577,37 @@ def _competition_parts(request: web.Request) -> tuple[str, str, str]:
 async def competition_detail(request: web.Request) -> web.Response:
     org, competition, key = _competition_parts(request)
     snapshot = await request.app["backend"].inspect_competition(org, competition)
-    request.app["store"].upsert_competition(key, org, competition, snapshot)
+    _upsert_snapshot(request.app, key, org, competition, snapshot)
     return web.json_response(snapshot)
+
+
+async def events(request: web.Request) -> web.StreamResponse:
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=SSE_QUEUE_SIZE)
+    request.app["event_subscribers"].add(queue)
+    response = web.StreamResponse(
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-store",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+    await response.prepare(request)
+    try:
+        await response.write(b"retry: 2000\nevent: sync\ndata: {}\n\n")
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    queue.get(), timeout=SSE_KEEPALIVE_SECONDS
+                )
+                await response.write(f"event: {event}\ndata: {{}}\n\n".encode())
+            except asyncio.TimeoutError:
+                await response.write(b": keepalive\n\n")
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+    finally:
+        request.app["event_subscribers"].discard(queue)
+    return response
 
 
 async def competition_images(request: web.Request) -> web.Response:
@@ -524,16 +683,69 @@ async def competition_action(request: web.Request) -> web.Response:
                 status=409,
             )
         operation_id = str(uuid.uuid4())
+        if request.app["store"].competition(key) is None:
+            _upsert_snapshot(
+                request.app,
+                key,
+                org,
+                competition,
+                {
+                    "organization": org,
+                    "competition": competition,
+                    "reference": key,
+                    "title": competition,
+                    "image_state": "missing",
+                    "workspace_state": "missing",
+                    "service_health": "unknown",
+                },
+            )
         operation = request.app["store"].create_operation(
             operation_id, key, action, options
         )
-        task = asyncio.create_task(
-            _run_operation(request.app, operation_id, org, competition, action, options)
+        _track_operation_task(
+            request.app,
+            operation_id,
+            _run_operation(request.app, operation_id, org, competition, action, options),
         )
-        request.app["operation_tasks"][operation_id] = task
+        _publish_refresh(request.app)
     return web.json_response(
         {"operation_id": operation_id, "operation": operation}, status=202
     )
+
+
+def _mark_operation_cancelled(
+    app: web.Application, operation_id: str
+) -> dict[str, Any] | None:
+    value = app["store"].operation(operation_id)
+    if value is not None and value["status"] not in TERMINAL_OPERATION_STATES:
+        app["store"].fail(
+            operation_id,
+            {
+                "type": ErrorType.OPERATION_FAILED.value,
+                "message": "Operation cancelled",
+                "stage": "cancelled",
+                "logs": [],
+            },
+            status="cancelled",
+        )
+        _publish_refresh(app)
+    return app["store"].operation(operation_id)
+
+
+def _track_operation_task(
+    app: web.Application, operation_id: str, coroutine: Any
+) -> asyncio.Task[None]:
+    task = asyncio.create_task(coroutine)
+    app["operation_tasks"][operation_id] = task
+
+    def done(completed: asyncio.Task[None]) -> None:
+        if app["operation_tasks"].get(operation_id) is completed:
+            app["operation_tasks"].pop(operation_id, None)
+        if completed.cancelled():
+            _mark_operation_cancelled(app, operation_id)
+
+    task.add_done_callback(done)
+    return task
 
 
 async def _run_operation(
@@ -559,7 +771,7 @@ async def _run_operation(
             progress,
             app["store"].adoption(key),
         )
-        app["store"].upsert_competition(key, org, competition, result)
+        _upsert_snapshot(app, key, org, competition, result)
         if action == "delete-workspace":
             app["store"].delete_adoption(key)
         if action == "stop":
@@ -568,16 +780,7 @@ async def _run_operation(
             app["store"].set_explicit_stopped(key, False)
         app["store"].finish(operation_id, result)
     except asyncio.CancelledError:
-        app["store"].fail(
-            operation_id,
-            {
-                "type": ErrorType.OPERATION_FAILED.value,
-                "message": "Operation cancelled",
-                "stage": "cancelled",
-                "logs": [],
-            },
-            status="cancelled",
-        )
+        _mark_operation_cancelled(app, operation_id)
     except WireError as exc:
         app["store"].fail(operation_id, exc.as_dict())
     except Exception as exc:
@@ -592,6 +795,7 @@ async def _run_operation(
         )
     finally:
         app["operation_tasks"].pop(operation_id, None)
+        _publish_refresh(app)
 
 
 async def operation_detail(request: web.Request) -> web.Response:
@@ -610,8 +814,12 @@ async def operation_cancel(request: web.Request) -> web.Response:
         return web.json_response(value)
     task = request.app["operation_tasks"].get(operation_id)
     if task:
-        task.cancel()
-    return web.json_response({"operation_id": operation_id, "status": "cancelling"}, status=202)
+        if not task.done() and not task.cancelling():
+            task.cancel()
+        await asyncio.gather(asyncio.shield(task), return_exceptions=True)
+        if request.app["operation_tasks"].get(operation_id) is task:
+            request.app["operation_tasks"].pop(operation_id, None)
+    return web.json_response(_mark_operation_cancelled(request.app, operation_id))
 
 
 async def logs(request: web.Request) -> web.Response:
@@ -664,12 +872,29 @@ async def put_credentials(request: web.Request) -> web.Response:
             status=400,
         )
     request.app["store"].put_credentials(normalized)
+    _publish_refresh(request.app)
     return web.json_response({"synchronized": True})
 
 
 async def delete_credentials(request: web.Request) -> web.Response:
     request.app["store"].delete_credentials()
+    _publish_refresh(request.app)
     return web.json_response({"synchronized": False})
+
+
+async def logout(request: web.Request) -> web.Response:
+    if not request.app["lan"] or request.get("auth_kind") != "browser":
+        raise WireError(
+            ErrorType.SECURITY_ERROR.value,
+            "Browser logout is available only for LAN dashboard sessions",
+            status=403,
+        )
+    session_id = request.cookies.get(SESSION_COOKIE, "")
+    request.app["sessions"].pop(session_id, None)
+    response = web.json_response({"logged_out": True})
+    response.del_cookie(SESSION_COOKIE, path=f"{BASE_PATH}/")
+    _publish_refresh(request.app)
+    return response
 
 
 async def nitro_login(request: web.Request) -> web.Response:
@@ -715,6 +940,7 @@ async def nitro_login(request: web.Request) -> web.Response:
         )
     credentials["api_base_url"] = request.app["judge_api_url"]
     request.app["store"].put_credentials(credentials)
+    _publish_refresh(request.app)
     return web.json_response({"authenticated": True, "username": credentials["username"]})
 
 
@@ -756,6 +982,8 @@ async def legacy_adoptions(request: web.Request) -> web.Response:
             key, sanitized, bool(manifest.get("verified"))
         )
         adopted += 1
+    if adopted:
+        _publish_refresh(request.app)
     return web.json_response({"adopted": adopted})
 
 
@@ -775,7 +1003,7 @@ def _forward_headers(request: web.Request, target_host: str) -> dict[str, str]:
             cookies = [
                 part.strip()
                 for part in value.split(";")
-                if part.strip().partition("=")[0] != "naij_manager_session"
+                if part.strip().partition("=")[0] != SESSION_COOKIE
             ]
             if not cookies:
                 continue
@@ -893,16 +1121,128 @@ async def reverse_proxy(request: web.Request) -> web.StreamResponse:
         return response
 
 
+def _docker_event_time(event: dict[str, Any]) -> float | None:
+    value = event.get("timeNano")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) / 1_000_000_000
+    value = event.get("time")
+    return (
+        float(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
+
+
+def _docker_event_competitions(
+    app: web.Application, event: dict[str, Any]
+) -> set[str]:
+    actor = event.get("Actor")
+    attributes = actor.get("Attributes") if isinstance(actor, dict) else None
+    attributes = attributes if isinstance(attributes, dict) else {}
+    identity = str(attributes.get(f"{LABEL_PREFIX}.identity") or "")
+    owner = str(attributes.get(f"{LABEL_PREFIX}.owner") or "")
+    if identity and owner == MANAGER_IDENTITY:
+        try:
+            org, competition = identity.split("/", 1)
+            return {competition_key(org, competition)}
+        except (ValueError, WireError):
+            return set()
+    if str(event.get("Type") or "").lower() != "image":
+        return set()
+    candidates = {
+        str(value)
+        for value in (
+            attributes.get("name"),
+            attributes.get("image"),
+            event.get("from"),
+            actor.get("ID") if isinstance(actor, dict) else None,
+        )
+        if value
+    }
+    matches = set()
+    backend = app["backend"]
+    for snapshot in app["store"].competitions():
+        reference = str(snapshot.get("reference") or "")
+        if "/" not in reference:
+            continue
+        org, competition = reference.split("/", 1)
+        expected = set(backend.image_names(org, competition))
+        expected.update(backend.fallback_aliases(org, competition))
+        for image in (snapshot.get("images") or {}).values():
+            if isinstance(image, dict) and image.get("name"):
+                expected.add(str(image["name"]))
+        if candidates & expected:
+            matches.add(reference)
+    return matches
+
+
+def _queue_docker_reconcile(app: web.Application, reference: str) -> None:
+    previous = app["docker_debounce_tasks"].get(reference)
+    if previous:
+        previous.cancel()
+
+    async def reconcile() -> None:
+        await asyncio.sleep(DOCKER_EVENT_DEBOUNCE)
+        org, competition = reference.split("/", 1)
+        snapshot = await app["backend"].inspect_competition(org, competition)
+        _upsert_snapshot(app, reference, org, competition, snapshot)
+
+    task = asyncio.create_task(reconcile())
+    app["docker_debounce_tasks"][reference] = task
+
+    def done(completed: asyncio.Task[None]) -> None:
+        if app["docker_debounce_tasks"].get(reference) is completed:
+            app["docker_debounce_tasks"].pop(reference, None)
+        if not completed.cancelled() and (error := completed.exception()) is not None:
+            app["logger"]("error", redact(str(error)))
+
+    task.add_done_callback(done)
+
+
+async def _watch_docker_events(app: web.Application) -> None:
+    backoff = 1
+
+    async def received(event: dict[str, Any]) -> None:
+        timestamp = _docker_event_time(event)
+        if timestamp is not None:
+            app["docker_event_since"] = timestamp
+        for reference in _docker_event_competitions(app, event):
+            _queue_docker_reconcile(app, reference)
+
+    while True:
+        try:
+            await app["backend"].watch_events(
+                received, since=app["docker_event_since"]
+            )
+            backoff = 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            app["logger"]("error", f"Docker event watcher: {redact(str(exc))}")
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 30)
+
+
 async def on_startup(app: web.Application) -> None:
     app["http"] = ClientSession(
         timeout=ClientTimeout(total=30), cookie_jar=aiohttp.DummyCookieJar()
     )
     await _refresh_runtime(app)
+    if callable(getattr(app["backend"], "watch_events", None)):
+        app["docker_watcher"] = asyncio.create_task(_watch_docker_events(app))
 
 
 async def on_cleanup(app: web.Application) -> None:
+    watcher = app.get("docker_watcher")
+    if watcher:
+        watcher.cancel()
+    for task in list(app["docker_debounce_tasks"].values()):
+        task.cancel()
     for task in list(app["operation_tasks"].values()):
         task.cancel()
+    if watcher:
+        await asyncio.gather(watcher, return_exceptions=True)
+    await asyncio.gather(*app["docker_debounce_tasks"].values(), return_exceptions=True)
     await asyncio.gather(*app["operation_tasks"].values(), return_exceptions=True)
     await app["http"].close()
 
@@ -949,6 +1289,9 @@ def create_app(
     app["login_attempts"] = {}
     app["operation_guard"] = asyncio.Lock()
     app["operation_tasks"] = {}
+    app["event_subscribers"] = set()
+    app["docker_debounce_tasks"] = {}
+    app["docker_event_since"] = time.time()
     app["logger"] = lambda level, message: print(f"{level}: {message}", flush=True)
     app["judge_api_url"] = JUDGE_API_URL
 
@@ -961,6 +1304,7 @@ def create_app(
     router.add_get(f"{BASE_PATH}/api/v1/info", info)
     router.add_get(f"{BASE_PATH}/api/v1/health", health)
     router.add_get(f"{BASE_PATH}/api/v1/competitions", competitions)
+    router.add_get(f"{BASE_PATH}/api/v1/events", events)
     router.add_get(f"{BASE_PATH}/api/v1/competitions/{{org}}/{{competition}}", competition_detail)
     router.add_get(f"{BASE_PATH}/api/v1/competitions/{{org}}/{{competition}}/images", competition_images)
     router.add_get(f"{BASE_PATH}/api/v1/competitions/{{org}}/{{competition}}/open", competition_open)
@@ -977,6 +1321,7 @@ def create_app(
     router.add_post(f"{BASE_PATH}/api/v1/operations/{{operation_id}}/cancel", operation_cancel)
     router.add_put(f"{BASE_PATH}/api/v1/credentials", put_credentials)
     router.add_delete(f"{BASE_PATH}/api/v1/credentials", delete_credentials)
+    router.add_post(f"{BASE_PATH}/api/v1/logout", logout)
     router.add_post(f"{BASE_PATH}/api/v1/login", nitro_login)
     router.add_post(f"{BASE_PATH}/api/v1/legacy-adoptions", legacy_adoptions)
     router.add_route(

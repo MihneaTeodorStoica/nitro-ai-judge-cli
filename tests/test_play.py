@@ -118,6 +118,29 @@ class PlayCommandTests(unittest.TestCase):
         self.assertEqual(client.actions[0][2], "play")
         self.assertEqual(client.actions[0][3]["pull"], "missing")
 
+    def test_interactive_progress_updates_one_spinner(self) -> None:
+        class ProgressClient(FakeClient):
+            def wait_operation(self, operation_id: str, **options: object) -> dict:
+                options["progress"](
+                    {"message": "Pulling contest image 1/2 (3s elapsed)"}
+                )
+                return super().wait_operation(operation_id, **options)
+
+        output = io.StringIO()
+        output.isatty = lambda: True
+        with (
+            patch.object(play.sys, "stdout", output),
+            patch.object(play, "Spinner") as spinner_class,
+        ):
+            spinner = spinner_class.return_value
+            spinner.start.return_value = spinner
+            play.perform_play_action("org", "contest", "play", client=ProgressClient())
+
+        spinner.update.assert_called_once_with(
+            "Pulling contest image 1/2 (3s elapsed)"
+        )
+        spinner.stop.assert_called_once_with()
+
     def test_stop_and_container_delete_use_manager_actions(self) -> None:
         client = FakeClient()
         self.assertEqual(play.cmd_play_stop("org", "contest", client=client, quiet=True), 0)
@@ -168,6 +191,21 @@ class PlayCommandTests(unittest.TestCase):
         self.assertTrue(args.open)
         manager = parser.parse_args(["play", "manager", "install", "--yes"])
         self.assertEqual(manager.manager_action, "install")
+
+        delete_image = parser.parse_args(
+            ["play", "delete-image", "org/contest", "--yes"]
+        )
+        client = FakeClient()
+        with patch.object(play, "_client", return_value=client):
+            self.assertEqual(play.cmd_play(delete_image), 0)
+        self.assertEqual(client.actions[0][2], "delete-image")
+
+    def test_image_deletion_requires_yes_without_tty(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["play", "delete-image", "org/contest"]
+        )
+        with patch.object(play.sys.stdin, "isatty", return_value=False):
+            self.assertEqual(play.cmd_play(args), 1)
 
     def test_cli_selected_context_is_reused(self) -> None:
         context = {"contest": {"organizationSlug": "org", "competitionSlug": "contest"}}

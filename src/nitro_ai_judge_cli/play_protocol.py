@@ -89,6 +89,7 @@ ACTION_NAMES = {
     "stop",
     "restart",
     "recreate",
+    "delete-image",
     "delete-container",
     "delete-workspace",
 }

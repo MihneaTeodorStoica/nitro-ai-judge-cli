@@ -587,7 +587,9 @@ class SubmitScreen(ModalScreen[SubmitRequest | None]):
 class PlayMenu(ModalScreen[str | None]):
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, workspace_state: str = "missing") -> None:
+    def __init__(
+        self, workspace_state: str = "missing", image_state: str = "missing"
+    ) -> None:
         super().__init__()
         if workspace_state == "running":
             self.actions = (
@@ -620,6 +622,12 @@ class PlayMenu(ModalScreen[str | None]):
                 ("play", "Play — prepare and start"),
                 ("pull", "Pull competition images"),
                 ("dashboard", "Dashboard — open Play manager"),
+            )
+        if workspace_state not in {"running", "stopped"} and image_state == "ready":
+            self.actions = (
+                *self.actions[:-1],
+                ("delete-image", "Delete cached images — preserve workspace"),
+                self.actions[-1],
             )
 
     def compose(self) -> ComposeResult:
@@ -2247,17 +2255,24 @@ class NitroTUI(App[int]):
     @work(group="play-menu", exclusive=True)
     async def play_menu_flow(self) -> None:
         action = await self.push_screen_wait(
-            PlayMenu(str(self.play_snapshot.get("workspace_state") or "missing"))
+            PlayMenu(
+                str(self.play_snapshot.get("workspace_state") or "missing"),
+                str(self.play_snapshot.get("image_state") or "missing"),
+            )
         )
         if not action:
             return
-        if action == "delete-container":
+        if action in {"delete-container", "delete-image"}:
             org, comp = contest_ref(self.current_contest or {})
+            message = (
+                f"Remove containers and network for {org}/{comp}?\n"
+                "Workspace data will be preserved."
+                if action == "delete-container"
+                else f"Delete cached competition images for {org}/{comp}?\n"
+                "Workspace data will be preserved; images must be pulled again."
+            )
             confirmed = await self.push_screen_wait(
-                ConfirmScreen(
-                    f"Remove containers and network for {org}/{comp}?\n"
-                    "Workspace data will be preserved."
-                )
+                ConfirmScreen(message)
             )
             if not confirmed:
                 return

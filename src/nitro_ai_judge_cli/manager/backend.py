@@ -25,8 +25,18 @@ from ..play_protocol import (
 
 
 Progress = Callable[[str, str], Awaitable[None]]
+DockerEvent = Callable[[dict[str, Any]], Awaitable[None]]
 LABEL_PREFIX = "org.nitro-ai.naij.play"
 SHARED_NETWORK = "naij-play"
+PULL_PROGRESS_INTERVAL = 1
+# Nitro publishes no designated default; its generic test pair matches a real contest pair.
+FALLBACK_IMAGES = (
+    "nitroai/nitro-test-notebook@sha256:9dd89d1c276b550c1c9bf05b7cf60761996a3dec0bc3a013400221416d8ec22e",
+    "nitroai/nitro-test-judge-proxy@sha256:46542d51497d689b7d57acf85b143dc52e4022246afedae0d04dc1325358fd24",
+)
+S3_PROXY_CONFIG_ERROR = (
+    "Missing required environment variables: S3_URL, S3_BUCKET, S3_ACCESS_KEY_ID"
+)
 SENSITIVE = re.compile(r"(?i)(authorization|token|password|secret|cookie)([=: ]+)([^\s,;]+)")
 SENSITIVE_HEADER = re.compile(
     r"(?im)^(\s*(?:authorization|proxy-authorization|cookie|set-cookie)\s*:).*$"
@@ -57,6 +67,7 @@ class DockerBackend:
     def __init__(self, projects_dir: str, manager_image: str) -> None:
         self.projects_dir = projects_dir
         self.manager_image = manager_image
+        self.shared_network = os.environ.get("NAIJ_MANAGER_NETWORK", SHARED_NETWORK)
         os.makedirs(projects_dir, mode=0o700, exist_ok=True)
 
     async def run(
@@ -78,11 +89,18 @@ class DockerBackend:
                 process.communicate(input_bytes), timeout=timeout
             )
         except asyncio.CancelledError:
-            process.terminate()
+            if process.returncode is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
             try:
                 await asyncio.wait_for(process.wait(), timeout=5)
             except asyncio.TimeoutError:
-                process.kill()
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
                 await process.wait()
             raise
         except asyncio.TimeoutError:
@@ -107,6 +125,53 @@ class DockerBackend:
             )
         return process.returncode or 0, out, err
 
+    async def watch_events(
+        self, callback: DockerEvent, *, since: float | None = None
+    ) -> None:
+        command = ["docker", "events", "--format", "{{json .}}"]
+        if since is not None:
+            command.extend(["--since", str(int(since))])
+        for resource_type in ("container", "image", "volume", "network"):
+            command.extend(["--filter", f"type={resource_type}"])
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            assert process.stdout is not None
+            while line := await process.stdout.readline():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict):
+                    await callback(event)
+            returncode = await process.wait()
+            assert process.stderr is not None
+            error = redact((await process.stderr.read()).decode(errors="replace"))
+            if returncode:
+                raise WireError(
+                    ErrorType.DOCKER_UNAVAILABLE.value,
+                    error.strip() or f"docker events exited with {returncode}",
+                    stage="watching",
+                    status=503,
+                )
+        finally:
+            if process.returncode is None:
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    await process.wait()
+
     @staticmethod
     def names(org: str, competition: str) -> dict[str, str]:
         slug = f"{org}-{competition}"
@@ -127,6 +192,13 @@ class DockerBackend:
             f"nitroai/{org}-{competition}-judge-proxy:latest",
         )
 
+    @staticmethod
+    def fallback_aliases(org: str, competition: str) -> tuple[str, str]:
+        return (
+            f"naij-fallback/{org}-{competition}-notebook:latest",
+            f"naij-fallback/{org}-{competition}-judge-proxy:latest",
+        )
+
     def compose_path(self, org: str, competition: str) -> str:
         return os.path.join(self.projects_dir, f"{org}-{competition}.json")
 
@@ -140,6 +212,18 @@ class DockerBackend:
         except (OSError, KeyError, TypeError, ValueError):
             return None
         return workspace if isinstance(workspace, str) and workspace else None
+
+    def _saved_images(self, org: str, competition: str) -> tuple[str, str] | None:
+        try:
+            with open(self.compose_path(org, competition), encoding="utf-8") as stream:
+                services = json.load(stream)["services"]
+            images = (
+                services["jupyter-server"]["image"],
+                services["submission-proxy"]["image"],
+            )
+        except (OSError, KeyError, TypeError, ValueError):
+            return None
+        return images if all(isinstance(image, str) and image for image in images) else None
 
     def compose_command(self, org: str, competition: str, *args: str) -> list[str]:
         names = self.names(org, competition)
@@ -186,20 +270,33 @@ class DockerBackend:
         return code == 0
 
     async def images(self, org: str, competition: str) -> dict[str, Any]:
-        notebook, proxy = self.image_names(org, competition)
-        notebook_ready, proxy_ready = await asyncio.gather(
-            self._image_present(notebook), self._image_present(proxy)
+        primary = self.image_names(org, competition)
+        aliases = self.fallback_aliases(org, competition)
+        ready = await asyncio.gather(
+            *(self._image_present(image) for image in (*primary, *aliases))
         )
-        return {
-            "notebook": {
-                "name": notebook,
-                "state": ImageState.READY.value if notebook_ready else ImageState.MISSING.value,
-            },
-            "proxy": {
-                "name": proxy,
-                "state": ImageState.READY.value if proxy_ready else ImageState.MISSING.value,
-            },
-        }
+        saved = self._saved_images(org, competition)
+        values: dict[str, Any] = {}
+        for index, role in enumerate(("notebook", "proxy")):
+            primary_ready, fallback_ready = ready[index], ready[index + 2]
+            use_fallback = fallback_ready and (
+                not primary_ready or bool(saved and saved[index] == aliases[index])
+            )
+            values[role] = {
+                "name": aliases[index] if use_fallback else primary[index],
+                "state": (
+                    ImageState.READY.value
+                    if primary_ready or fallback_ready
+                    else ImageState.MISSING.value
+                ),
+                "fallback": use_fallback,
+                "fallback_source": FALLBACK_IMAGES[index] if use_fallback else None,
+            }
+        return values
+
+    async def _preferred_images(self, org: str, competition: str) -> tuple[str, str]:
+        images = await self.images(org, competition)
+        return images["notebook"]["name"], images["proxy"]["name"]
 
     async def _volume_details(self, name: str) -> dict[str, Any] | None:
         code, stdout, _ = await self.run(
@@ -260,6 +357,7 @@ class DockerBackend:
                 else ImageState.MISSING.value
             ),
             "images": image_data,
+            "image_fallback": any(item.get("fallback") for item in image_data.values()),
             "workspace_state": (
                 WorkspaceState.RUNNING.value
                 if running
@@ -386,10 +484,11 @@ class DockerBackend:
         gpu: bool,
         pull_policy: str,
         workspace_name: str | None = None,
+        images: tuple[str, str] | None = None,
     ) -> dict[str, Any]:
         names = self.names(org, competition)
         workspace_name = workspace_name or names["workspace"]
-        notebook, proxy = self.image_names(org, competition)
+        notebook, proxy = images or self.image_names(org, competition)
         key = names["key"]
         base_path = f"/nitro/competitions/{org}/{competition}/jupyter/"
         proxy_path = f"/nitro/competitions/{org}/{competition}/proxy/"
@@ -464,7 +563,7 @@ class DockerBackend:
             },
             "networks": {
                 "default": {"labels": self.labels(org, competition, "private-network")},
-                "nitro": {"external": True, "name": SHARED_NETWORK},
+                "nitro": {"external": True, "name": self.shared_network},
             },
             "volumes": {
                 workspace_name: {"external": True, "name": workspace_name},
@@ -672,6 +771,37 @@ class DockerBackend:
             except FileNotFoundError:
                 pass
 
+    async def _pull_image(self, image: str, message: str, progress: Progress) -> None:
+        task = asyncio.create_task(self.run(["docker", "pull", image], timeout=1800))
+        started = time.monotonic()
+        try:
+            while True:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(task), timeout=PULL_PROGRESS_INTERVAL
+                    )
+                    return
+                except asyncio.TimeoutError:
+                    elapsed = int(time.monotonic() - started)
+                    await progress("pulling", f"{message} ({elapsed}s elapsed)")
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    @staticmethod
+    def _image_not_found(error: WireError) -> bool:
+        details = "\n".join((error.message, *error.logs)).lower()
+        return any(
+            marker in details
+            for marker in (
+                "manifest unknown",
+                "pull access denied",
+                "repository does not exist",
+                "requested access to the resource is denied",
+            )
+        )
+
     async def _pull(self, org: str, competition: str, policy: str, progress: Progress) -> None:
         if policy not in {"always", "missing", "never"}:
             raise WireError(
@@ -681,19 +811,38 @@ class DockerBackend:
                 status=400,
             )
         images = self.image_names(org, competition)
-        present = {image: await self._image_present(image) for image in images}
-        missing = [image for image in images if not present[image]]
+        aliases = self.fallback_aliases(org, competition)
+        current = await self.images(org, competition)
+        missing = [
+            index
+            for index, role in enumerate(("notebook", "proxy"))
+            if current[role]["state"] != ImageState.READY.value
+        ]
         if policy == "never" and missing:
             raise WireError(
                 ErrorType.OPERATION_FAILED.value,
-                f"Image is missing and pull policy is never: {missing[0]}",
+                f"Image is missing and pull policy is never: {images[missing[0]]}",
                 stage="pulling",
                 status=409,
             )
-        selected = list(images) if policy == "always" else missing
-        for index, image in enumerate(selected, 1):
-            await progress("pulling", f"Pulling image {index}/{len(selected)}: {image}")
-            await self.run(["docker", "pull", image], timeout=1800)
+        selected = list(range(2)) if policy == "always" else missing
+        for step, index in enumerate(selected, 1):
+            image = images[index]
+            message = f"Pulling contest image {step}/{len(selected)}: {image}"
+            await progress("pulling", message)
+            try:
+                await self._pull_image(image, message, progress)
+            except WireError as error:
+                if not self._image_not_found(error):
+                    raise
+                fallback = FALLBACK_IMAGES[index]
+                await progress(
+                    "pulling",
+                    f"No contest image is published; using fallback {fallback}",
+                )
+                fallback_message = f"Pulling fallback image {step}/{len(selected)}: {fallback}"
+                await self._pull_image(fallback, fallback_message, progress)
+                await self.run(["docker", "tag", fallback, aliases[index]], timeout=60)
 
     async def _assert_owned_containers(self, org: str, competition: str) -> None:
         key = f"{org}/{competition}"
@@ -707,7 +856,6 @@ class DockerBackend:
                 "--format",
                 f"{{{{.Label \"{LABEL_PREFIX}.owner\"}}}}|{{{{.Label \"{LABEL_PREFIX}.identity\"}}}}",
             ],
-            check=False,
             timeout=30,
         )
         for line in stdout.splitlines():
@@ -750,7 +898,7 @@ class DockerBackend:
         self, org: str, competition: str, timeout: int, progress: Progress
     ) -> None:
         names = self.names(org, competition)
-        jupyter = f"http://{names['jupyter_alias']}:8888/nitro/competitions/{org}/{competition}/jupyter/"
+        jupyter = f"http://{names['jupyter_alias']}:8888/nitro/competitions/{org}/{competition}/jupyter/api"
         proxy = f"http://{names['proxy_alias']}:9000/health"
         deadline = time.monotonic() + timeout
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3)) as session:
@@ -759,20 +907,90 @@ class DockerBackend:
                 for url in (jupyter, proxy):
                     try:
                         async with session.get(url, allow_redirects=False) as response:
-                            ready.append(response.status < 500)
+                            ready.append(200 <= response.status < 300)
                     except (aiohttp.ClientError, asyncio.TimeoutError):
                         ready.append(False)
                 if all(ready):
                     return
+                _, exited, _ = await self.run(
+                    self.compose_command(org, competition, "ps", "--status", "exited", "-q"),
+                    check=False,
+                    timeout=30,
+                )
+                if exited.strip():
+                    logs = await self.logs(org, competition, 20)
+                    raise WireError(
+                        ErrorType.OPERATION_FAILED.value,
+                        "A Play service exited before becoming ready",
+                        stage="verifying",
+                        logs=tuple(logs.splitlines()),
+                        status=502,
+                    )
                 await asyncio.sleep(1)
-        logs = await self.logs(org, competition, 40)
+        logs = await self.logs(org, competition, 20)
         raise WireError(
             ErrorType.OPERATION_FAILED.value,
             f"Play services did not become ready within {timeout} seconds",
             stage="verifying",
-            logs=tuple(logs.splitlines()[-40:]),
+            logs=tuple(logs.splitlines()),
             status=504,
         )
+
+    async def _wait_services_with_proxy_fallback(
+        self, org: str, competition: str, timeout: int, progress: Progress
+    ) -> None:
+        try:
+            await self._wait_services(org, competition, timeout, progress)
+            return
+        except WireError as error:
+            saved = self._saved_images(org, competition)
+            if (
+                not saved
+                or saved[1] != self.image_names(org, competition)[1]
+                or not any(S3_PROXY_CONFIG_ERROR in line for line in error.logs)
+            ):
+                raise
+
+        fallback = FALLBACK_IMAGES[1]
+        alias = self.fallback_aliases(org, competition)[1]
+        message = f"Pulling compatible submission proxy fallback: {fallback}"
+        await progress(
+            "pulling",
+            "Contest proxy requires unavailable S3 configuration; using compatible fallback",
+        )
+        if not await self._image_present(fallback):
+            await self._pull_image(fallback, message, progress)
+        await self.run(["docker", "tag", fallback, alias], timeout=60)
+
+        with open(self.compose_path(org, competition), encoding="utf-8") as stream:
+            compose = json.load(stream)
+        compose["services"]["submission-proxy"]["image"] = alias
+        self._atomic_compose(self.compose_path(org, competition), compose)
+        await progress("applying", "Restarting Play services with compatible fallback")
+        await self.run(
+            self.compose_command(
+                org,
+                competition,
+                "up",
+                "-d",
+                "--no-deps",
+                "--force-recreate",
+                "submission-proxy",
+            ),
+            timeout=180,
+        )
+        await self.run(
+            self.compose_command(
+                org,
+                competition,
+                "up",
+                "-d",
+                "--no-deps",
+                "jupyter-server",
+            ),
+            timeout=180,
+        )
+        await self._wait_services(org, competition, timeout, progress)
 
     async def perform(
         self,
@@ -833,13 +1051,15 @@ class DockerBackend:
             gpu_requested = (
                 "required" if options.get("gpu") is True else "disabled" if options.get("gpu") is False else "auto"
             )
-            gpu = await self._gpu_enabled(self.image_names(org, competition)[0], gpu_requested)
+            images = await self._preferred_images(org, competition)
+            gpu = await self._gpu_enabled(images[0], gpu_requested)
             compose = self._compose(
                 org,
                 competition,
                 gpu=gpu,
                 pull_policy="never",
                 workspace_name=str(legacy_context["workspace"]),
+                images=images,
             )
             self._atomic_compose(compose_path, compose)
             try:
@@ -849,7 +1069,7 @@ class DockerBackend:
                     command.append("--force-recreate")
                 await self.run(command, timeout=float(options.get("wait_timeout") or 120) + 120)
                 await progress("verifying", "Checking Jupyter and submission proxy routes")
-                await self._wait_services(
+                await self._wait_services_with_proxy_fallback(
                     org, competition, int(options.get("wait_timeout") or 120), progress
                 )
                 await self._finish_legacy(legacy_context)
@@ -860,6 +1080,33 @@ class DockerBackend:
             snapshot["workspace"] = legacy_context["workspace"]
             snapshot["workspace_state"] = WorkspaceState.RUNNING.value
             return snapshot
+        if action == "delete-image":
+            await progress("validating", "Verifying competition image ownership and usage")
+            await self._assert_owned_containers(org, competition)
+            _, containers, _ = await self.run(
+                [
+                    "docker",
+                    "ps",
+                    "-a",
+                    "--filter",
+                    f"label={LABEL_PREFIX}.identity={org}/{competition}",
+                    "--format",
+                    "{{.ID}}",
+                ],
+                timeout=30,
+            )
+            if containers.strip():
+                raise WireError(
+                    ErrorType.COMPETITION_BUSY.value,
+                    "Remove the competition containers before deleting its images",
+                    stage="validating",
+                    status=409,
+                )
+            for image in (*self.image_names(org, competition), *self.fallback_aliases(org, competition)):
+                if await self._image_present(image):
+                    await progress("applying", f"Removing image tag {image}")
+                    await self.run(["docker", "image", "rm", image], timeout=60)
+            return await self.inspect_competition(org, competition)
         if not os.path.isfile(compose_path):
             raise WireError(
                 ErrorType.NOT_FOUND.value,
@@ -872,7 +1119,7 @@ class DockerBackend:
             await self.run(self.compose_command(org, competition, action), timeout=180)
             if action in {"start", "restart"}:
                 await progress("verifying", "Checking Jupyter and submission proxy routes")
-                await self._wait_services(
+                await self._wait_services_with_proxy_fallback(
                     org,
                     competition,
                     int(options.get("wait_timeout") or 120),

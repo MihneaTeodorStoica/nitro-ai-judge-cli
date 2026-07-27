@@ -4,14 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Sign in · Nitro Play</title>
-  <link rel="stylesheet" href="/nitro/assets/app.css">
+  <link rel="icon" type="image/svg+xml" href="/nitro/assets/logo.svg">
+  <link rel="stylesheet" href="/nitro/assets/app.css?v=4">
 </head>
 <body class="login-page">
   <main class="login-panel">
-    <div class="route-mark" aria-hidden="true"><span>/</span>nitro</div>
+    <img class="brand-logo" src="/nitro/assets/logo.svg" alt="">
     <p class="eyebrow">Protected network dashboard</p>
     <h1>Open Play manager</h1>
     <p>Enter the dashboard login token stored in your private NAIJ state directory.</p>
+    <p class="dialog-error" role="alert">__LOGIN_ERROR__</p>
     <form action="/nitro/login" method="post">
       <label><span>Dashboard login token</span><input name="token" type="password" required autocomplete="current-password"></label>
       <button type="submit" class="primary-button">Continue</button>

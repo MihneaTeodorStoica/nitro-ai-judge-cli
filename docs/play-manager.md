@@ -69,8 +69,17 @@ sequenced stage messages and bounded redacted failure logs.
 
 API v1 exposes manager info/health, competition lists/details/images/open
 routes, actions, logs and log following, operation snapshots/cancellation, and
-credential synchronization. Info and health are public. All other API routes
-require the private CLI bearer or a browser session.
+credential synchronization. `GET /nitro/api/v1/events` streams a `sync` event
+on connection, coalesced `refresh` invalidations, and 15-second keepalives.
+`GET /nitro/api/v1/competitions?cached=true` returns SQLite snapshots without
+Docker discovery or Nitro requests. Info and health are public. All other API
+routes require the private CLI bearer or a browser session.
+
+The dashboard uses one event stream after its first load and silently fetches
+the cached snapshot after invalidation. Manual Refresh remains the full Docker
+and Nitro reconciliation. The manager also supervises `docker events` for
+owned containers, networks, volumes, and expected image tags, coalesces event
+bursts, and writes only semantic state changes.
 
 ## Security
 
@@ -83,6 +92,12 @@ redacted before streaming or persistence.
 Non-loopback binding additionally requires a TLS certificate, TLS key, and
 absolute HTTPS public URL. It enables a separate dashboard login token and
 per-peer login rate limiting. Installation prints an exposure warning.
+
+**Disconnect Nitro** deletes only credentials stored in manager SQLite and
+leaves CLI credentials and workspaces untouched. LAN-only `POST
+/nitro/api/v1/logout` is CSRF-protected, expires only the requesting browser's
+session cookie, and leaves other browser sessions active. Expired sessions and
+invalid dashboard tokens return the token login page with a visible error.
 
 ## Installation, update, and recovery
 

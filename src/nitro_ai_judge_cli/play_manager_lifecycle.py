@@ -170,6 +170,7 @@ def generate_manager_compose(
         "NAIJ_MANAGER_STATE": "/var/lib/naij/manager.db",
         "NAIJ_MANAGER_PROJECTS": "/var/lib/naij/projects",
         "NAIJ_MANAGER_IMAGE": str(config["image"]),
+        "NAIJ_MANAGER_NETWORK": MANAGER_NETWORK,
         "NAIJ_MANAGER_DOCKER_CONTEXT": endpoint.context,
     }
     secrets_config: dict[str, Any] = {

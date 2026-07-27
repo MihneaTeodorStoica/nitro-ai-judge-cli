@@ -480,6 +480,11 @@ class CompletionTests(unittest.TestCase):
         )
         self.assertIn("--force", deletion)
         self.assertNotIn("--gpu", deletion)
+        image_deletion = completion.candidates(
+            ["play", "delete-image", ""], context
+        )
+        self.assertIn("--yes", image_deletion)
+        self.assertNotIn("--force", image_deletion)
         up = completion.candidates(["play", "Acme/Open", ""], context)
         self.assertIn("--gpu", up)
         self.assertNotIn("--follow", up)
