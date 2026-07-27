@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nitro-ai-judge-cli"
-version = "2.2.1"
+version = "3.0.0"
 description = "CLI client for judge.nitro-ai.org"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["textual>=8.2,<9"]
 authors = [
   { name = "Mihnea-Teodor Stoica" }
 ]
@@ -25,6 +25,9 @@ classifiers = [
   "Topic :: Utilities",
 ]
 
+[project.optional-dependencies]
+manager = ["aiohttp>=3.10,<4"]
+
 [project.urls]
 Homepage = "https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli"
 Repository = "https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli"
@@ -36,3 +39,6 @@ nitro-cli = "nitro_ai_judge_cli.cli:legacy_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"nitro_ai_judge_cli.manager" = ["assets/*"]

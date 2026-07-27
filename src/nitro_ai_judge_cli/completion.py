@@ -10,7 +10,7 @@ from .state import load_context, selected_contest, selected_submission, selected
 
 
 COMMANDS = (
-    "login", "contests", "tasks", "task", "download-data", "play", "submit",
+    "login", "tui", "contests", "tasks", "task", "download-data", "play", "submit",
     "submissions", "submission", "set-final", "unset-final", "use", "ls",
     "show", "completion",
 )
@@ -19,9 +19,17 @@ SHELL_COMMANDS = (
     "back", "unselect",
 )
 GLOBAL_OPTIONS = ("--api-url", "--submission-proxy", "--state-dir", "--help")
-PLAY_ACTIONS = ("up", "start", "stop", "restart", "down", "logs", "ps", "status")
+PLAY_ACTIONS = (
+    "play", "pull", "start", "stop", "restart", "recreate",
+    "delete-container", "delete-image", "delete-workspace", "logs", "status", "open", "manager",
+)
+MANAGER_ACTIONS = (
+    "install", "update", "status", "open", "start", "stop", "restart",
+    "uninstall", "purge", "sync-credentials",
+)
 OPTION_GROUPS = {
     "login": (("--username",), ("--help",)),
+    "tui": (("--help",),),
     "contests": (
         ("--page",), ("--page-size",), ("--all-pages",), ("--all",),
         ("--help",),
@@ -47,23 +55,42 @@ OPTION_GROUPS = {
     "completion": (("--help",),),
 }
 PLAY_OPTION_GROUPS = {
-    "up": (
-        ("--gpu", "--no-gpu"), ("--port",), ("--proxy-port",),
-        ("--bind",), ("--pull",), ("--wait-timeout",), ("--help",),
+    "play": (
+        ("--gpu", "--no-gpu"), ("--pull",), ("--wait-timeout",),
+        ("--open",), ("--yes",), ("--help",),
     ),
-    "down": (("--volumes",), ("--force",), ("--help",)),
-    "logs": (("-f", "--follow"), ("--help",)),
-    "start": (("--help",),),
-    "stop": (("--help",),),
-    "restart": (("--help",),),
-    "ps": (("--help",),),
-    "status": (("--help",),),
+    "recreate": (
+        ("--gpu", "--no-gpu"), ("--pull",), ("--wait-timeout",),
+        ("--open",), ("--yes",), ("--help",),
+    ),
+    "pull": (("--pull",), ("--yes",), ("--help",)),
+    "delete-workspace": (("--force",), ("--yes",), ("--help",)),
+    "logs": (("-f", "--follow"), ("--tail",), ("--yes",), ("--help",)),
+    "start": (("--yes",), ("--help",)),
+    "stop": (("--yes",), ("--help",)),
+    "restart": (("--yes",), ("--help",)),
+    "delete-container": (("--yes",), ("--help",)),
+    "delete-image": (("--yes",), ("--help",)),
+    "status": (("--yes",), ("--help",)),
+    "open": (("--yes",), ("--help",)),
+    "manager-install": (
+        ("--bind",), ("--port",), ("--image",), ("--tls-cert",),
+        ("--tls-key",), ("--public-url",), ("--yes",), ("--help",),
+    ),
+    "manager-update": (
+        ("--bind",), ("--port",), ("--image",), ("--tls-cert",),
+        ("--tls-key",), ("--public-url",), ("--yes",), ("--help",),
+    ),
+    "manager-purge": (("--force",), ("--help",)),
 }
 VALUE_OPTIONS = {
     "login": {"--username"},
     "contests": {"--page", "--page-size"},
     "download-data": {"-c", "--category", "-d", "--out-dir", "-o", "--output"},
-    "play": {"--port", "--proxy-port", "--bind", "--pull", "--wait-timeout"},
+    "play": {
+        "--port", "--bind", "--pull", "--wait-timeout", "--tail", "--image",
+        "--tls-cert", "--tls-key", "--public-url",
+    },
     "submit": {"-o", "--output", "-s", "--source", "-n", "--note"},
     "submissions": {
         "-a", "--author", "-p", "--page", "-n", "--page-size", "-m", "--mode",
@@ -204,7 +231,7 @@ def _option_groups(
     command: str, action: str | None = None
 ) -> tuple[tuple[str, ...], ...]:
     if command == "play":
-        return PLAY_OPTION_GROUPS.get(action or "up", PLAY_OPTION_GROUPS["up"])
+        return PLAY_OPTION_GROUPS.get(action or "play", (("--help",),))
     return OPTION_GROUPS.get(command, (("--help",),))
 
 
@@ -442,7 +469,23 @@ def _play_action(words: list[str]) -> tuple[str, list[str]]:
         )
         if action:
             return action, positionals[1:]
-    return "up", positionals
+    return "play", positionals
+
+
+def _play_completion_action(words: list[str]) -> str:
+    action, remaining = _play_action(words)
+    if action == "manager" and remaining:
+        manager_action = next(
+            (
+                item
+                for item in MANAGER_ACTIONS
+                if item.casefold() == remaining[0].casefold()
+            ),
+            None,
+        )
+        if manager_action:
+            return f"manager-{manager_action}"
+    return action
 
 
 def candidates(
@@ -499,7 +542,7 @@ def candidates(
     ):
         return []
 
-    action = _play_action(arguments)[0] if command == "play" else None
+    action = _play_completion_action(arguments) if command == "play" else None
     value_candidates = _value_candidates(command, arguments, prefix, action)
     if value_candidates is not None:
         return value_candidates
@@ -521,7 +564,27 @@ def candidates(
                 supplied_context=supplied_context,
             )
             return _matches((*PLAY_ACTIONS, *contests), prefix)
-        action, contest_words = _play_action(arguments)
+        base_action, contest_words = _play_action(arguments)
+        if base_action == "manager":
+            if not contest_words:
+                return _matches(MANAGER_ACTIONS, prefix)
+            manager_action = next(
+                (
+                    item
+                    for item in MANAGER_ACTIONS
+                    if item.casefold() == contest_words[0].casefold()
+                ),
+                None,
+            )
+            if manager_action:
+                return _remaining_options(
+                    command,
+                    arguments,
+                    prefix,
+                    f"manager-{manager_action}",
+                )
+            return _matches(MANAGER_ACTIONS, prefix)
+        action = base_action
         if contest_words:
             return _remaining_options(command, arguments, prefix, action)
         if prefix:

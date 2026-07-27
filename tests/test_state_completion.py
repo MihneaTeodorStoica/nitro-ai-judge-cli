@@ -182,9 +182,10 @@ class StateTests(unittest.TestCase):
         state.save_context({"contest": {"org": "o", "comp": "c"}})
         history = Path(state.prepare_history())
 
-        self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
-        for path in (root / "state.json", root / "context.json", history):
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
+            for path in (root / "state.json", root / "context.json", history):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(json.loads((root / "state.json").read_text()), {"access_token": "secret"})
         self.assertFalse(any(item.name.startswith(".naij-") for item in root.iterdir()))
 
@@ -469,18 +470,34 @@ class CompletionTests(unittest.TestCase):
         )
         self.assertEqual(
             completion.candidates(["play", "logs", ""], context),
-            ["--follow", "--help", "-f"],
+            ["--follow", "--help", "--tail", "--yes", "-f"],
         )
         self.assertEqual(
             completion.candidates(["play", "logs", "--follow", ""], context),
-            ["--help"],
+            ["--help", "--tail", "--yes"],
         )
-        down = completion.candidates(["play", "down", ""], context)
-        self.assertIn("--volumes", down)
-        self.assertNotIn("--gpu", down)
+        deletion = completion.candidates(
+            ["play", "delete-workspace", ""], context
+        )
+        self.assertIn("--force", deletion)
+        self.assertNotIn("--gpu", deletion)
+        image_deletion = completion.candidates(
+            ["play", "delete-image", ""], context
+        )
+        self.assertIn("--yes", image_deletion)
+        self.assertNotIn("--force", image_deletion)
         up = completion.candidates(["play", "Acme/Open", ""], context)
         self.assertIn("--gpu", up)
         self.assertNotIn("--follow", up)
+        self.assertIn(
+            "install",
+            completion.candidates(["play", "manager", ""], context),
+        )
+        install = completion.candidates(
+            ["play", "manager", "install", ""], context
+        )
+        self.assertIn("--bind", install)
+        self.assertIn("--tls-cert", install)
 
     def test_completion_with_supplied_context_performs_no_state_or_network_io(self) -> None:
         context = self.context()

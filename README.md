@@ -1,19 +1,36 @@
-# Nitro AI Judge CLI (NAIJ)
+# Nitro AI Judge CLI
 
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/nitro-ai-judge-cli?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/nitro-ai-judge-cli)
 
 `naij` is a command-line client for `judge.nitro-ai.org`. It can browse competitions and tasks, download task data, submit solutions, inspect feedback, and launch past competitions locally with Docker.
 
-> **Help wanted:** A new Textual TUI is under active development. Testing,
-> UI/UX feedback, bug reports, and code contributions are welcome on the
-> [`feat/textual-tui-usability-overhaul`](https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli/tree/feat/textual-tui-usability-overhaul)
-> branch.
+For a full-screen contest cockpit with searchable contests, ordered tasks, data
+downloads, local play controls, and submission feedback, run:
+
+```bash
+naij tui
+```
+
+The TUI can start before login and will prompt for credentials when needed.
+Selections are shared with the regular `naij` shell and commands.
+
+## 3.0 highlights
+
+- `naij tui` provides a keyboard-first, full-screen contest cockpit.
+- `naij play manager install` starts the local Docker-backed Play manager; its
+  dashboard updates live when NAIJ or Docker changes a managed competition.
+- The manager keeps Play services private behind stable Jupyter and submission
+  proxy routes, with operation progress, redacted logs, cancellation, and
+  offline recovery instructions.
+- **Disconnect Nitro** removes only credentials saved inside the manager.
+  LAN-only **Log out** expires only the current browser session. Neither action
+  removes CLI credentials or workspaces.
 
 ## Requirements
 
 - Python 3.10+
-- no third-party runtime dependencies
-- Docker with `docker compose` for `naij play`
+- Textual 8.2.x (installed automatically)
+- A local Linux-container Docker daemon with the Compose plugin for `naij play`
 
 ## Installation
 
@@ -48,7 +65,60 @@ naij login
 naij login --username MihneaStoica
 ```
 
-Login posts to Nitro's `/api/auth/login` endpoint and stores the returned access and refresh tokens. NAIJ refreshes an expired access token when possible and asks you to log in again when the saved refresh token is no longer valid.
+Login posts to Nitro's `/api/auth/login` endpoint and stores the returned access and refresh tokens. Nitro AI Judge refreshes an expired access token when possible and asks you to log in again when the saved refresh token is no longer valid.
+
+## Full-screen TUI
+
+Run `naij tui` for the full-screen interface. Its Yazi-inspired browser keeps
+contests and one-based tasks in separate columns while the right pane provides
+four task views:
+
+1. Overview
+2. Data
+3. Submissions
+4. Play
+
+The layout adapts to the terminal. At 100 columns and wider all three panes
+remain visible. From 60 through 99 columns, only the active pane is shown and
+Tab/Shift-Tab cycles contests, tasks, and task details. Below 60 columns or 20
+rows, Nitro AI Judge shows a resize message instead of compressing the interface.
+
+The complete keymap is:
+
+- `j`/`k` or Up/Down: move
+- Enter: open
+- `h`/`l` or Left/Right: move across browser panes and task views
+- Esc: back
+- Tab/Shift-Tab: cycle panes, or move between form fields
+- `/`: filter the active contest, task, or submission list
+- `r`: refresh the active view
+- `?`: contextual help
+- `q` or Ctrl+D: quit
+- `1`–`4`: select Overview, Data, Submissions, or Play
+- `d`: open the task-data download form
+- `s`: open the submission form
+- `p`: open the Play action menu
+
+Forms use Space to toggle choices and Tab to move; the submission form also has
+clickable Submit and Cancel buttons, and the Submissions view has a persistent
+New submission button. That view requests and displays only the signed-in
+user's submissions. Destructive Play actions require confirmation. Mouse
+selection, scrolling, tab switching, and field focus are supported as an
+optional convenience; every workflow remains keyboard-accessible. Hold Shift
+while dragging when the terminal's normal text selection is needed.
+
+The TUI loads cached contests, tasks, and submissions before connecting. A
+temporary network failure or expired login leaves that cached content visible
+with one recovery message at the bottom. When a request detects stale
+credentials, the TUI refreshes the bearer token and generated site cookie once,
+retries once, and opens the login form if recovery fails. A real `403` after
+refresh remains an access-denied error rather than reopening login repeatedly.
+Loaded task statements are merged into the task cache, so reopening a task can
+show its full statement before the next network refresh.
+
+Release screenshots and the keyboard walkthrough will be added under
+`docs/assets/` with the `v3.0.0` release capture; the recording contract is in
+[`docs/assets/README.md`](docs/assets/README.md).
 
 ## Basic usage
 
@@ -102,7 +172,7 @@ naij set-final
 naij play
 ```
 
-If saved context is missing or stale, NAIJ reports which `naij use` command will refresh it.
+If saved context is missing or stale, Nitro AI Judge reports which `naij use` command will refresh it.
 
 ## Downloads and submissions
 
@@ -166,42 +236,108 @@ Submission-proxy precedence is `--submission-proxy`, `NAIJ_SUBMISSION_PROXY`, th
 
 ## Past-contest play
 
-`play` creates a persistent contest workspace with the competition's notebook and submission-proxy images:
+Version 3 routes every competition operation through one Dockerized Play
+manager at <http://localhost:51123/nitro/>. The manager uses the host Docker
+socket and Compose plugin; it does not run Docker-in-Docker. Competition
+Jupyter and proxy ports stay private, while their browser routes remain stable
+under the manager URL.
+
+Install the manager once, then start a competition:
 
 ```bash
+naij play manager install --yes
 naij play algolymp/algolymp-preojia-ix-x
-naij play up algolymp/algolymp-preojia-ix-x --pull missing
 naij play status algolymp/algolymp-preojia-ix-x
 naij play logs algolymp/algolymp-preojia-ix-x
 naij play logs -f algolymp/algolymp-preojia-ix-x
 naij play stop algolymp/algolymp-preojia-ix-x
+naij play start algolymp/algolymp-preojia-ix-x
 naij play restart algolymp/algolymp-preojia-ix-x
-naij play down algolymp/algolymp-preojia-ix-x
-naij play down algolymp/algolymp-preojia-ix-x --volumes --force
+naij play recreate algolymp/algolymp-preojia-ix-x
+naij play delete-container algolymp/algolymp-preojia-ix-x
+naij play delete-image algolymp/algolymp-preojia-ix-x
+naij play delete-workspace algolymp/algolymp-preojia-ix-x --force
 ```
 
-The competition can be omitted from every play action when context supplies it. `naij play ORG/COMP` is an alias for `play up`.
+The competition can be omitted when saved context supplies it. `naij play
+ORG/COMP` means `play play ORG/COMP`; the old `up` and `down` spellings remain
+parseable as migration aliases.
 
 Lifecycle behavior:
 
-- `play up` creates or recreates the services while reusing saved ports and workspace data.
-- `play start`, `stop`, and `restart` match the corresponding Compose operations. `stop` keeps the containers.
-- `play logs` prints existing logs; `-f`/`--follow` follows them.
-- `play ps` shows Compose state; `play status` shows saved URLs, GPU mode, images, and workspace paths.
-- `play down` removes containers and the contest network but preserves workspace data.
-- `play down --volumes` deletes workspace data after confirmation. Non-interactive use also requires `--force`.
+- `play`, `pull`, `start`, `stop`, `restart`, and `recreate` are idempotent,
+  asynchronous manager operations. Identical concurrent requests share one
+  operation; conflicting requests report `competition_busy`.
+- Explicit `stop` remains stopped until the user starts or recreates it.
+- `delete-container` removes containers and the private project network but
+  preserves `/home/jovyan`.
+- `delete-image` removes only that competition's cached image tags after its
+  containers are deleted; workspace data is preserved.
+- `delete-workspace` requires the full `organization/competition` reference in
+  interactive use. Automation must pass `--force`.
+- `logs` is redacted before it leaves the manager; `logs --follow` streams it.
+- `--gpu` requires GPU access, `--no-gpu` disables it, and the default probes
+  automatically. `--pull always|missing|never` retains Compose-style policy.
+- `--open` opens Jupyter after a successful `play` or `recreate`; commands do
+  not open a browser by default.
 
-`play up` supports `--gpu`/`--no-gpu`, `--port`, `--proxy-port`, `--bind`, `--pull always|missing|never`, and `--wait-timeout`. Ports 8888 and 9000 are preferred and move upward automatically when unavailable. Services bind to `127.0.0.1` by default; use `--bind 0.0.0.0` only when LAN exposure is intended. GPU availability is detected automatically unless explicitly enabled or disabled.
+The retired competition `--port`, `--proxy-port`, and `--bind` flags produce
+guidance instead of publishing a container port. Configure the single manager
+endpoint with `naij play manager install --bind ... --port ...`.
 
-Pull policy is evaluated before pulling:
+Manager lifecycle commands are:
 
-- `always` pulls both images.
-- `missing` pulls only images absent locally and is the default.
-- `never` fails if an image is absent.
+```bash
+naij play manager status
+naij play manager update --yes
+naij play manager open
+naij play manager stop
+naij play manager start
+naij play manager restart
+naij play manager sync-credentials
+naij play manager uninstall
+```
 
-Each required pull displays `Pulling image N/TOTAL: IMAGE`, followed by one `Pulled image: IMAGE` line. Redirected output uses plain lines without terminal control sequences, and locally present images do not show a pull spinner under the `missing` policy.
+Uninstall removes the manager container and network but preserves its private
+SQLite volume, configuration, competition metadata, images, and every
+workspace. `manager purge --force` removes only manager-private SQLite state;
+it never removes competition workspaces.
 
-Generated files live under `~/.naij/contestant-cloud/ORG-COMP/`. Each competition has its own Compose project, network, and persistent workspace volume mounted at `/home/jovyan`. Nitro image namespaces and product service identifiers remain unchanged.
+### LAN access and TLS
+
+Loopback is the safe default. A non-loopback bind is rejected unless all three
+of `--tls-cert`, `--tls-key`, and an HTTPS `--public-url` are supplied. LAN mode
+uses a separate dashboard login token at
+`~/.naij/play-manager/dashboard-login-token`, rate-limits login, and still
+requires the private CLI API credential for CLI calls:
+
+```bash
+naij play manager install --yes \
+  --bind 0.0.0.0 --port 51123 \
+  --tls-cert /absolute/path/cert.pem \
+  --tls-key /absolute/path/key.pem \
+  --public-url https://play.example.test:51123
+```
+
+The dashboard uses strict Host and Origin validation, SameSite sessions, CSRF,
+CSP, and clickjacking protection. Access and refresh tokens are synchronized
+through the authenticated API after install, login, or refresh and never
+appear in URLs, Compose values, logs, or dashboard HTML.
+
+### Migration and recovery
+
+Installation examines only known 2.x generated state and exact Compose labels,
+then sends a sanitized adoption manifest. The first action lazily cuts over a
+verified legacy environment. An unlabeled named workspace is reused without
+alteration; a container-layer workspace is copied into a labeled volume while
+the stopped legacy container remains recovery evidence until the new routes
+pass validation. Failed cutover removes only newly manager-labeled objects and
+restarts the old container.
+
+An update retains the previous image and generated configuration. If the new
+manager does not become healthy, the CLI restores and restarts the previous
+configuration. See [the architecture document](docs/play-manager.md) for the
+runtime model, labels, API, and recovery boundaries.
 
 ## Interactive shell
 
@@ -260,13 +396,16 @@ Completion resolves the current argument slot and shows only its next useful lev
 
 ## State and security
 
-By default, NAIJ stores credentials, context, shell history, and play data under `~/.naij/`:
+By default, Nitro AI Judge stores credentials, context, shell history, and play data under `~/.naij/`:
 
 ```text
 ~/.naij/state.json
 ~/.naij/context.json
 ~/.naij/history
-~/.naij/contestant-cloud/
+~/.naij/play-manager/manager.json
+~/.naij/play-manager/compose.json
+~/.naij/play-manager/cli-api-token
+~/.naij/contestant-cloud/        # read-only 2.x migration source
 ```
 
 Override the root with:
@@ -281,19 +420,30 @@ State-directory precedence is `--state-dir`, `NAIJ_STATE_DIR`, the 2.x
 
 The state directory is mode `0700`; credential, context, and history files are mode `0600`. Writes use a same-directory temporary file, `fsync`, and atomic replacement. Corrupt credentials are left untouched and produce a recovery-oriented login error. Corrupt context is ignored with a warning.
 
-## Migrating to 2.x
+## Command compatibility
 
-Version 2.x renames the canonical command from `nitro-cli` to `naij` and the Python package from `nitro_cli` to `nitro_ai_judge_cli`. The old `nitro-cli` command remains as a deprecated compatibility entrypoint throughout 2.x, prints a warning once per invocation, and will be removed in 3.0.0. There is no compatibility shim for importing `nitro_cli`.
+`naij` remains canonical. The deprecated `nitro-cli` executable delegates to
+the same entry point and now remains available until 4.0.0. There is no legacy
+Python import package.
 
-The legacy `NITRO_STATE_DIR`, `NITRO_API_BASE_URL`, and `NITRO_SUBMISSION_PROXY` variables remain lower-priority fallbacks through 2.x and are planned for removal in 3.0.0.
+The legacy `NITRO_STATE_DIR`, `NITRO_API_BASE_URL`, and
+`NITRO_SUBMISSION_PROXY` variables remain lower-priority compatibility
+fallbacks for the 3.x transition.
 
-Default state moves from `~/.nitro-cli` to `~/.naij`. If only the old directory exists, NAIJ renames it before loading state. If both exist, NAIJ uses the new directory, leaves the old one untouched, and warns once per process. If the rename fails, NAIJ uses the old directory for that run and prints manual-migration guidance. Setting either state-directory environment variable disables automatic default-path migration.
+Default state moves from `~/.nitro-cli` to `~/.naij`. If only the old directory exists, Nitro AI Judge renames it before loading state. If both exist, Nitro AI Judge uses the new directory, leaves the old one untouched, and warns once per process. If the rename fails, Nitro AI Judge uses the old directory for that run and prints manual-migration guidance. Setting either state-directory environment variable disables automatic default-path migration.
 
-Generated native completion registers both command names during the 2.x compatibility period while invoking `naij` internally.
+Generated native completion registers both command names while invoking `naij`
+internally.
 
 ## Publishing
 
-The workflow in `.github/workflows/publish.yml` runs the unittest suite on Python 3.10, 3.11, and 3.12, builds the distributions, runs `twine check`, and smoke-tests the installed wheel. Tags matching `v*` publish to PyPI only after tests and build validation pass.
+The release workflow runs host tests on Linux, Windows, and macOS, builds and
+checks the CLI, builds the manager, and runs Linux Docker integration. A release
+tag must exactly match `pyproject.toml`. It refuses an existing immutable GHCR
+tag, publishes `linux/amd64` and `linux/arm64`, then updates the matching `3.0`
+and `stable` tags. PyPI publication happens only after GHCR succeeds. The
+development branch publishes `edge`; neither the workflow nor installer uses
+`latest`.
 
 Recommended release checks:
 
@@ -302,12 +452,15 @@ python3 -m unittest discover -s tests -v
 python3 -m pip install --upgrade build twine
 python3 -m build
 python3 -m twine check dist/*
-git tag v2.1.0
+docker build -f manager/Dockerfile -t naij-play-manager:dev .
+NAIJ_DOCKER_INTEGRATION=1 NAIJ_PLAY_MANAGER_IMAGE=naij-play-manager:dev \
+  python3 -m unittest discover -s tests/integration -v
+git tag v3.0.0
 git push origin main --tags
 ```
 
 PyPI project: `nitro-ai-judge-cli`
 
-PyPI does not allow re-uploading the same filename for an existing release. A new release requires a new version in `pyproject.toml` and a matching new tag. Trusted publishing should target this repository and the `pypi` environment.
-
-Before publishing publicly, choose and add a license file.
+PyPI does not allow re-uploading an existing filename, and GHCR exact version
+tags are treated as immutable. A new release requires a new version and matching
+tag. Trusted publishing targets this repository and the `pypi` environment.

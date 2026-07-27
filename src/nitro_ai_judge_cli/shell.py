@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import readline
 import shlex
 from typing import Any, Callable
+
+try:
+    import readline
+except ImportError:  # Windows has no standard-library readline module.
+    readline = None  # type: ignore[assignment]
 
 from .completion import COMMANDS, candidates
 from .contests import find_task
@@ -58,6 +62,8 @@ All regular `naij` commands are also accepted without the leading `naij`."""
 
 
 def setup_readline() -> None:
+    if readline is None:
+        return
     history = prepare_history()
     try:
         readline.read_history_file(history)
@@ -127,6 +133,8 @@ def setup_readline() -> None:
 
 
 def save_shell_history() -> None:
+    if readline is None:
+        return
     lines = []
     for index in range(1, readline.get_current_history_length() + 1):
         item = readline.get_history_item(index)

@@ -2,99 +2,190 @@ name: Build and Publish
 
 on:
   push:
-    branches:
-      - main
-    tags:
-      - "v*"
+    branches: [main, feat/play-manager]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
+env:
+  MANAGER_IMAGE: ghcr.io/mihneateodorstoica/naij-play-manager
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  host-test:
+    name: Host tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
-
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.12"]
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install package
-        run: python -m pip install .
-
-      - name: Run tests
+      - name: Install CLI and manager test dependencies
+        run: python -m pip install ".[manager]"
+      - name: Run unit and Textual Pilot tests
         run: python -m unittest discover -s tests -v
 
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install build tools
-        run: python -m pip install --upgrade build twine
-
-      - name: Build distributions
-        run: python -m build
-
-      - name: Check distribution metadata
-        run: python -m twine check dist/*
-
-      - name: Install built wheel
-        run: python -m pip install --force-reinstall dist/*.whl
-
-      - name: Smoke-test installed commands
+      - name: Verify tag and package version agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: |
+          VERSION="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "${GITHUB_REF_NAME}" = "v${VERSION}"
+      - name: Build and check CLI distributions
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Install and smoke-test wheel
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall dist/*.whl
           naij --help >/tmp/naij-help
           nitro-cli --help >/tmp/nitro-cli-help 2>/tmp/nitro-cli-warning
           python -m nitro_ai_judge_cli --help >/tmp/naij-module-help
           cmp /tmp/naij-help /tmp/nitro-cli-help
           cmp /tmp/naij-help /tmp/naij-module-help
-          test "$(cat /tmp/nitro-cli-warning)" = 'warning: `nitro-cli` is deprecated; use `naij`. It will be removed in 3.0.0.'
-          python -c "import importlib.util; assert importlib.util.find_spec('nitro_cli') is None"
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+          test "$(cat /tmp/nitro-cli-warning)" = 'warning: `nitro-cli` is deprecated; use `naij`. It will be removed in 4.0.0.'
+      - uses: actions/upload-artifact@v4
         with:
           name: python-package-distributions
           path: dist/
 
-  publish:
-    needs: [test, build]
+  manager-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build manager image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: manager/Dockerfile
+          load: true
+          tags: naij-play-manager:ci
+      - name: Smoke-test image tools and entrypoint
+        run: |
+          docker run --rm --entrypoint docker naij-play-manager:ci compose version
+          docker run --rm --entrypoint python naij-play-manager:ci -c "import aiohttp, nitro_ai_judge_cli.manager"
+
+  docker-integration:
+    runs-on: ubuntu-latest
+    needs: manager-build
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ".[manager]"
+      - run: docker build -f manager/Dockerfile -t naij-play-manager:dev .
+      - name: Run opt-in Docker manager integration
+        env:
+          NAIJ_DOCKER_INTEGRATION: "1"
+          NAIJ_PLAY_MANAGER_IMAGE: naij-play-manager:dev
+        run: python -m unittest discover -s tests/integration -v
+
+  edge:
+    if: github.ref == 'refs/heads/feat/play-manager'
+    needs: [host-test, build, manager-build, docker-integration]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: manager/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.MANAGER_IMAGE }}:edge
+
+  manager-publish:
     if: startsWith(github.ref, 'refs/tags/v')
+    needs: [host-test, build, manager-build, docker-integration]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve immutable and mutable tags
+        id: version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          MINOR="$(echo "${VERSION}" | cut -d. -f1-2)"
+          echo "version=${VERSION}" >>"${GITHUB_OUTPUT}"
+          echo "minor=${MINOR}" >>"${GITHUB_OUTPUT}"
+      - name: Refuse to overwrite the immutable exact tag
+        shell: bash
+        run: |
+          if docker buildx imagetools inspect "${MANAGER_IMAGE}:${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "Immutable manager tag already exists" >&2
+            exit 1
+          fi
+      - name: Publish immutable multi-architecture image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: manager/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.MANAGER_IMAGE }}:${{ steps.version.outputs.version }}
+      - name: Update mutable release tags after exact image succeeds
+        shell: bash
+        run: |
+          docker buildx imagetools create \
+            --tag "${MANAGER_IMAGE}:${{ steps.version.outputs.minor }}" \
+            --tag "${MANAGER_IMAGE}:stable" \
+            "${MANAGER_IMAGE}:${{ steps.version.outputs.version }}"
+
+  publish-pypi:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: manager-publish
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-
     environment:
       name: pypi
       url: https://pypi.org/p/nitro-ai-judge-cli
-
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: python-package-distributions
           path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          skip-existing: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
