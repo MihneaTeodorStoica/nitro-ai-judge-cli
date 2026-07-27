@@ -9,7 +9,7 @@ from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from nitro_ai_judge_cli import cli, play, state
+from nitro_ai_judge_cli import cli, play, play_manager_lifecycle, state, ui
 from nitro_ai_judge_cli.play_manager_client import ManagerClient
 from nitro_ai_judge_cli.play_manager_lifecycle import (
     DockerEndpoint,
@@ -163,7 +163,7 @@ class PlayCommandTests(unittest.TestCase):
         )
 
     def test_manager_setup_spinner_stops_on_success_and_error(self) -> None:
-        for outcome in ({"manager_version": "3.0.1"}, RuntimeError("failed")):
+        for outcome in ({"manager_version": "3.0.2"}, RuntimeError("failed")):
             with self.subTest(outcome=type(outcome).__name__):
                 spinner = Mock()
                 spinner.start.return_value = spinner
@@ -201,6 +201,62 @@ class PlayCommandTests(unittest.TestCase):
             self.assertEqual(play.cmd_play(args), 130)
         spinner.stop.assert_called_once_with()
         self.assertEqual(output.getvalue(), "Manager setup interrupted.\n")
+
+    def test_spinner_frames_fit_narrow_terminal_and_cleanup(self) -> None:
+        output = io.StringIO()
+        output.isatty = lambda: True
+        columns = 8
+        with patch.object(
+            ui.shutil,
+            "get_terminal_size",
+            return_value=os.terminal_size((columns, 24)),
+        ):
+            for frame in ui.SPINNER_FRAMES:
+                ui._draw_spinner(output, "Installing a manager with a long label", frame)
+            ui.Spinner("unused", stream=output).stop()
+
+        frames = output.getvalue().split(ui.CLEAR_ROW)[1:-1]
+        self.assertEqual([value[-1] for value in frames], list(ui.SPINNER_FRAMES))
+        self.assertTrue(all(len(value) < columns for value in frames))
+        self.assertTrue(output.getvalue().endswith(ui.CLEAR_ROW))
+
+    def test_manager_start_installs_when_missing_or_uninstalled(self) -> None:
+        args = cli.build_parser().parse_args(["play", "manager", "start"])
+        with (
+            patch.object(play, "load_manager_config", return_value=None),
+            patch.object(play, "_install_or_repair_manager") as repair,
+            patch.object(play, "manager_container_exists") as container_exists,
+            patch.object(play, "manager_compose_action") as compose_action,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(play.cmd_manager(args), 0)
+        repair.assert_called_once_with()
+        container_exists.assert_not_called()
+        compose_action.assert_not_called()
+
+        for exists in (False, True):
+            with (
+                self.subTest(container_exists=exists),
+                patch.object(play, "load_manager_config", return_value={"port": 51123}),
+                patch.object(
+                    play_manager_lifecycle,
+                    "run_process",
+                    return_value=SimpleNamespace(stdout="container-id\n" if exists else ""),
+                ) as process,
+                patch.object(play, "_install_or_repair_manager") as repair,
+                patch.object(play, "manager_compose_action") as compose_action,
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(play.cmd_manager(args), 0)
+            self.assertEqual(
+                process.call_args.args[0][-4:], ["ps", "--all", "--quiet", "manager"]
+            )
+            if exists:
+                compose_action.assert_called_once_with("start")
+                repair.assert_not_called()
+            else:
+                repair.assert_called_once_with()
+                compose_action.assert_not_called()
 
     def test_long_action_is_polled_and_returns_snapshot(self) -> None:
         client = FakeClient()

@@ -150,7 +150,24 @@
     button.className = `action-button ${kind}`.trim();
     button.textContent = label;
     button.dataset.action = action;
+    if (action === "copy-link") button.setAttribute("aria-live", "polite");
     return button;
+  }
+
+  function jupyterUrl(reference) {
+    const [org, competition] = reference.split("/");
+    return new URL(`/nitro/competitions/${org}/${competition}/jupyter/`, window.location.href).href;
+  }
+
+  async function copyJupyterLink(button, reference) {
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard access is unavailable in this browser.");
+    try {
+      await navigator.clipboard.writeText(jupyterUrl(reference));
+    } catch (_error) {
+      throw new Error("Could not copy the Jupyter link. Check browser clipboard permissions.");
+    }
+    button.textContent = "Copied";
+    setTimeout(() => { if (button.isConnected) button.textContent = "Copy link"; }, 2000);
   }
 
   const filterClosers = new Map();
@@ -287,7 +304,7 @@
       status(fragment.querySelector(".health-status"), competition.service_health);
       const actions = fragment.querySelector(".actions");
       if (competition.workspace_state === "running") {
-        actions.append(actionButton("Open", "open", "primary"), actionButton("Stop", "stop"), actionButton("Restart", "restart"));
+        actions.append(actionButton("Open", "open", "primary"), actionButton("Copy link", "copy-link"), actionButton("Stop", "stop"), actionButton("Restart", "restart"));
       } else if (competition.workspace_state === "stopped") {
         actions.append(actionButton("Start", "start", "primary"), actionButton("Recreate", "recreate"));
       } else if (competition.workspace_state === "ready") {
@@ -505,12 +522,13 @@
     button.disabled = true;
     try {
       if (button.dataset.action === "open") {
-        const [org, competition] = reference.split("/");
         window.open(
-          `/nitro/competitions/${org}/${competition}/jupyter/`,
+          jupyterUrl(reference),
           "_blank",
           "noopener",
         );
+      } else if (button.dataset.action === "copy-link") {
+        await copyJupyterLink(button, reference);
       } else if (button.dataset.action === "delete-menu") {
         state.deleteRef = reference;
         document.querySelector("#delete-reference").textContent = reference;
@@ -527,7 +545,7 @@
       }
     } catch (error) {
       const action = button.dataset.action;
-      showAlert(error.message, () => startAction(reference, action));
+      showAlert(error.message, action === "copy-link" ? () => copyJupyterLink(button, reference) : () => startAction(reference, action));
     } finally {
       button.disabled = false;
     }

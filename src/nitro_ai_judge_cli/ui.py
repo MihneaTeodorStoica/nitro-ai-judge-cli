@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 import threading
 import time
@@ -10,6 +11,17 @@ from typing import TextIO, Any
 
 SPINNER_FRAMES = "|/-\\"
 SPINNER_INTERVAL_SECONDS = 0.12
+CLEAR_ROW = "\r\033[K"
+
+
+def _draw_spinner(stream: TextIO, label: str, frame: str) -> None:
+    available = max(0, shutil.get_terminal_size(fallback=(80, 24)).columns - 1)
+    if available < 2:
+        visible = frame[:available]
+    else:
+        visible = f"{label[:available - 2]} {frame}"
+    stream.write(f"{CLEAR_ROW}{visible}")
+    stream.flush()
 
 
 class Spinner:
@@ -28,8 +40,7 @@ class Spinner:
         def run() -> None:
             index = 0
             while not self.stop_event.is_set():
-                self.stream.write(f"\r{self.label} {SPINNER_FRAMES[index]}")
-                self.stream.flush()
+                _draw_spinner(self.stream, self.label, SPINNER_FRAMES[index])
                 index = (index + 1) % len(SPINNER_FRAMES)
                 self.stop_event.wait(SPINNER_INTERVAL_SECONDS)
 
@@ -45,7 +56,7 @@ class Spinner:
         if self.thread is not None:
             self.thread.join()
         if self.tty:
-            self.stream.write("\r\033[K")
+            self.stream.write(CLEAR_ROW)
             self.stream.flush()
 
 
@@ -60,8 +71,7 @@ def _start_spinner(prefix: str) -> tuple[threading.Event, threading.Thread]:
             print(prefix, flush=True)
             return
         while not stop_event.is_set():
-            sys.stdout.write(f"\r{prefix} {SPINNER_FRAMES[index]}")
-            sys.stdout.flush()
+            _draw_spinner(sys.stdout, prefix, SPINNER_FRAMES[index])
             index = (index + 1) % len(SPINNER_FRAMES)
             stop_event.wait(SPINNER_INTERVAL_SECONDS)
 
@@ -74,7 +84,7 @@ def _stop_spinner(stop_event: threading.Event, thread: threading.Thread) -> None
     stop_event.set()
     thread.join()
     if bool(getattr(sys.stdout, "isatty", lambda: False)()):
-        sys.stdout.write("\r\033[K")
+        sys.stdout.write(CLEAR_ROW)
         sys.stdout.flush()
 
 

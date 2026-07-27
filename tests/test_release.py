@@ -15,13 +15,13 @@ from nitro_ai_judge_cli.play_protocol import (
 
 
 class ReleaseTests(unittest.TestCase):
-    def test_3_0_1_versions_keep_protocol_compatibility(self) -> None:
+    def test_3_0_2_versions_keep_protocol_compatibility(self) -> None:
         pyproject = Path(__file__).parents[1].joinpath("pyproject.toml").read_text()
-        self.assertIn('version = "3.0.1"', pyproject)
-        self.assertEqual(MANAGER_VERSION, "3.0.1")
+        self.assertIn('version = "3.0.2"', pyproject)
+        self.assertEqual(MANAGER_VERSION, "3.0.2")
         self.assertEqual(
             DEFAULT_MANAGER_IMAGE,
-            "ghcr.io/mihneateodorstoica/naij-play-manager:3.0.1",
+            "ghcr.io/mihneateodorstoica/naij-play-manager:3.0.2",
         )
         self.assertEqual(API_VERSION, 1)
         self.assertEqual(MINIMUM_CLI_VERSION, "3.0.0")
@@ -29,14 +29,14 @@ class ReleaseTests(unittest.TestCase):
     def test_manager_update_advances_only_older_official_images(self) -> None:
         cases = (
             (
-                "ghcr.io/mihneateodorstoica/naij-play-manager:3.0.0",
+                "ghcr.io/mihneateodorstoica/naij-play-manager:3.0.1",
                 None,
                 DEFAULT_MANAGER_IMAGE,
             ),
             ("naij-play-manager:dev", None, "naij-play-manager:dev"),
             ("registry.example/manager:2.0.0", None, "registry.example/manager:2.0.0"),
             (
-                "ghcr.io/mihneateodorstoica/naij-play-manager:3.0.0",
+                "ghcr.io/mihneateodorstoica/naij-play-manager:3.0.1",
                 "naij-play-manager:override",
                 "naij-play-manager:override",
             ),
@@ -61,7 +61,7 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(
                         play,
                         "install_manager",
-                        return_value={"manager_version": "3.0.1"},
+                        return_value={"manager_version": "3.0.2"},
                     ) as install,
                     patch("builtins.print"),
                 ):

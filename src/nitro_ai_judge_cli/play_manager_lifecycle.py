@@ -413,6 +413,12 @@ def manager_status() -> dict[str, Any]:
         }
 
 
+def manager_container_exists() -> bool:
+    return bool(
+        run_process(_compose_command("ps", "--all", "--quiet", "manager")).stdout.strip()
+    )
+
+
 def manager_compose_action(action: str) -> None:
     if not load_manager_config():
         raise RuntimeError("Play manager is not installed")

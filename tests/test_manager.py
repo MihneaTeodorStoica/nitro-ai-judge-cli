@@ -1343,6 +1343,13 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             'actionButton("Remove images", "delete-image", "danger")', script
         )
+        self.assertIn('actionButton("Copy link", "copy-link")', script)
+        self.assertIn("function jupyterUrl(reference)", script)
+        self.assertIn("window.open(\n          jupyterUrl(reference)", script)
+        self.assertIn("navigator.clipboard.writeText(jupyterUrl(reference))", script)
+        self.assertIn('button.textContent = "Copied"', script)
+        self.assertIn('action === "copy-link" ? () => copyJupyterLink', script)
+        self.assertIn('setAttribute("aria-live", "polite")', script)
         self.assertIn(
             '!["running", "stopped"].includes(competition.workspace_state)',
             script,

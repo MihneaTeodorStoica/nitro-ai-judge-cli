@@ -13,6 +13,7 @@ from .play_manager_client import ManagerClient, ManagerConnectionError
 from .play_manager_lifecycle import (
     install_manager,
     load_manager_config,
+    manager_container_exists,
     manager_compose_action,
     manager_status,
     purge_manager_state,
@@ -426,6 +427,11 @@ def cmd_manager(args: argparse.Namespace) -> int:
             return 1
         return 0
     if action in {"start", "stop", "restart"}:
+        if action == "start" and (
+            not load_manager_config() or not manager_container_exists()
+        ):
+            _install_or_repair_manager()
+            return 0
         manager_compose_action(action)
         print(f"Play manager {action} complete")
         return 0
