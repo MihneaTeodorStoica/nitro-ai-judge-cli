@@ -6,7 +6,7 @@ import argparse
 import sys
 from typing import Any
 
-from .api import cmd_login, configure_runtime, require_auth
+from .api import cmd_login, configure_runtime, get_auth, require_auth
 from .completion import candidates as completion_candidates, script as completion_script
 from .config import (
     DEFAULT_PAGE_SIZE,
@@ -26,9 +26,11 @@ from .contests import (
 from .play import PLAY_ACTIONS, add_play_parser, cmd_play, normalize_play_argv
 from .shell import run_shell
 from .state import (
+    CredentialsError,
     clear_context,
     configure_state_dir,
     load_context,
+    load_state,
     save_context,
     selected_contest,
     selected_submission,
@@ -132,6 +134,20 @@ def _resolve_task_reference(
 
 def _context_error(error: ValueError) -> int:
     print(f"Error: {error}")
+    return 1
+
+
+def _play_onboarding() -> int:
+    try:
+        logged_in = bool(get_auth(load_state() or {}))
+    except CredentialsError:
+        logged_in = False
+    steps = ["naij use ORG/COMP", "naij play"]
+    if not logged_in:
+        steps.insert(0, "naij login")
+    print("Complete Play setup:")
+    for number, step in enumerate(steps, 1):
+        print(f"{number}. {step}")
     return 1
 
 
@@ -536,6 +552,8 @@ def main(argv: list[str] | None = None) -> int:
         if inherited:
             contest = selected_contest(context)
             if not contest:
+                if args.play_action == "play":
+                    return _play_onboarding()
                 return _context_error(ValueError("no contest selected; run `naij use ORG/COMP`"))
             args.competition = [f"{contest[0]}/{contest[1]}"]
         result = cmd_play(args)

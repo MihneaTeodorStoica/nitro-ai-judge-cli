@@ -26,10 +26,7 @@
   const workspaceFilter = document.querySelector("#workspace-filter");
   const empty = document.querySelector("#empty-state");
   const count = document.querySelector("#result-count");
-  const pagination = document.querySelector("#pagination");
-  const previousPage = document.querySelector("#previous-page");
-  const nextPage = document.querySelector("#next-page");
-  const pageStatus = document.querySelector("#page-status");
+  const paginations = [...document.querySelectorAll("[data-pagination]")];
   const dialog = document.querySelector("#delete-dialog");
   const confirmation = document.querySelector("#delete-confirmation");
   const removeImageDialog = document.querySelector("#remove-image-dialog");
@@ -136,6 +133,15 @@
     const text = value || "unknown";
     node.textContent = text;
     node.dataset.state = text;
+  }
+
+  function effectiveImageState(competition) {
+    const operation = competition.operation;
+    if (operation?.stage === "pulling") {
+      if (["queued", "running"].includes(operation.status)) return "pulling";
+      if (operation.status === "failed") return "error";
+    }
+    return competition.image_state;
   }
 
   function actionButton(label, action, kind = "") {
@@ -258,7 +264,7 @@
     const matches = state.competitions.filter(item => {
       const haystack = `${item.reference} ${item.title || ""}`.toLowerCase();
       const match = keywords.every(keyword => haystack.includes(keyword));
-      return match && (!imageFilter.dataset.value || item.image_state === imageFilter.dataset.value) && (!workspaceFilter.dataset.value || item.workspace_state === workspaceFilter.dataset.value);
+      return match && (!imageFilter.dataset.value || effectiveImageState(item) === imageFilter.dataset.value) && (!workspaceFilter.dataset.value || item.workspace_state === workspaceFilter.dataset.value);
     });
     const pageCount = Math.max(1, Math.ceil(matches.length / PAGE_SIZE));
     state.page = Math.min(state.page, pageCount);
@@ -274,7 +280,7 @@
       fragment.querySelector(".competition-title").textContent = competition.title || competition.competition;
       fragment.querySelector(".competition-ref").textContent = competition.reference;
       const imageStatus = fragment.querySelector(".image-status");
-      status(imageStatus, competition.image_fallback ? "fallback" : competition.image_state);
+      status(imageStatus, effectiveImageState(competition));
       const fallbackSources = Object.values(competition.images || {}).filter(image => image.fallback).map(image => image.fallback_source);
       if (fallbackSources.length) imageStatus.title = `Using fallback: ${fallbackSources.join(", ")}`;
       status(fragment.querySelector(".workspace-status"), competition.workspace_state);
@@ -327,10 +333,12 @@
         emptyAction.hidden = true;
       }
     }
-    pagination.hidden = pageCount === 1;
-    previousPage.disabled = state.page === 1;
-    nextPage.disabled = state.page === pageCount;
-    pageStatus.textContent = `Page ${state.page} of ${pageCount}`;
+    for (const pagination of paginations) {
+      pagination.hidden = pageCount === 1;
+      pagination.querySelector('[data-page-action="previous"]').disabled = state.page === 1;
+      pagination.querySelector('[data-page-action="next"]').disabled = state.page === pageCount;
+      pagination.querySelector("[data-page-status]").textContent = `Page ${state.page} of ${pageCount}`;
+    }
     restoreRowFocus(priorFocus);
   }
 
@@ -440,12 +448,15 @@
       try {
         const latest = await api(`/nitro/api/v1/operations/${operationId}`);
         if (state.operationTimers.get(operationId) !== timer) return;
+        const previousImageState = competition && effectiveImageState(competition);
         if (competition) competition.operation = latest;
-        updateOperation(operationRow, latest);
+        const imageStateChanged = competition && previousImageState !== effectiveImageState(competition);
+        if (imageStateChanged) render();
+        else updateOperation(operationRow, latest);
         if (["complete", "failed", "cancelled", "interrupted"].includes(latest.status)) {
           clearInterval(timer);
           state.operationTimers.delete(operationId);
-          if (latest.status === "complete") scheduleAutoDismiss(latest, operationRow);
+          if (latest.status === "complete" && !imageStateChanged) scheduleAutoDismiss(latest, operationRow);
           await load({ cached: true, silent: true });
         }
       } catch (error) {
@@ -586,8 +597,14 @@
     state.page = 1;
     render();
   }));
-  previousPage.addEventListener("click", () => { state.page -= 1; render(); });
-  nextPage.addEventListener("click", () => { state.page += 1; render(); });
+  for (const pagination of paginations) {
+    pagination.addEventListener("click", event => {
+      const action = event.target.closest("[data-page-action]")?.dataset.pageAction;
+      if (!action) return;
+      state.page += action === "next" ? 1 : -1;
+      render();
+    });
+  }
   document.querySelector("#refresh").addEventListener("click", () => load({ refresh: true }));
   emptyAction.addEventListener("click", () => {
     if (emptyAction.dataset.action === "clear-filters") {
@@ -670,5 +687,5 @@
     });
   }
   setInterval(updateElapsedClocks, 100);
-  load().finally(connectEvents);
+  load().then(() => load({ refresh: true })).finally(connectEvents);
 })();

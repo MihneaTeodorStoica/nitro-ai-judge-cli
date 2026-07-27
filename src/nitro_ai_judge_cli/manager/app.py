@@ -292,6 +292,7 @@ async def asset(request: web.Request) -> web.Response:
         "offline.js": "application/javascript",
         "sw.js": "application/javascript",
         "logo.svg": "image/svg+xml",
+        "nitro-duck.png": "image/png",
         "inter-latin.woff2": "font/woff2",
         "inter-latin-ext.woff2": "font/woff2",
         "lexend-deca-latin.woff2": "font/woff2",
@@ -303,7 +304,7 @@ async def asset(request: web.Request) -> web.Response:
     response = web.Response(body=content, content_type=content_types[name])
     if name in {"app.css", "app.js", "sw.js"}:
         response.headers["Cache-Control"] = "no-cache"
-    elif name.endswith(".woff2") or name == "logo.svg":
+    elif name.endswith(".woff2") or name in {"logo.svg", "nitro-duck.png"}:
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     if name == "sw.js":
         response.headers["Service-Worker-Allowed"] = f"{BASE_PATH}/"
@@ -1169,7 +1170,6 @@ def _docker_event_competitions(
             continue
         org, competition = reference.split("/", 1)
         expected = set(backend.image_names(org, competition))
-        expected.update(backend.fallback_aliases(org, competition))
         for image in (snapshot.get("images") or {}).values():
             if isinstance(image, dict) and image.get("name"):
                 expected.add(str(image["name"]))

@@ -36,6 +36,15 @@ class ShellLoopTests(unittest.TestCase):
         dispatch.assert_not_called()
         save_history.assert_called_once()
 
+    def test_startup_prints_one_random_hint(self) -> None:
+        with patch.object(
+            shell.random, "choice", return_value="Use `cd ..` to move up one level."
+        ) as choice:
+            result, output, _, _ = self.run_with_input(["q"])
+        self.assertEqual(result, 0)
+        self.assertIn("Hint: Use `cd ..` to move up one level.\n", output)
+        choice.assert_called_once_with(shell.SHELL_HINTS)
+
     def test_ctrl_d_exits_cleanly_and_saves_history(self) -> None:
         result, _, dispatch, save_history = self.run_with_input([EOFError()])
         self.assertEqual(result, 0)

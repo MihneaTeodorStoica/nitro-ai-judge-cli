@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import shlex
 from typing import Any, Callable
 
@@ -29,6 +30,14 @@ from .state import (
 
 
 Dispatch = Callable[[list[str]], int]
+SHELL_HINTS = (
+    "Press Tab to complete commands and selections.",
+    "Use `use ORG/COMP` to select a contest.",
+    "Enter a displayed number to navigate.",
+    "Use `cd ..` to move up one level.",
+    "Run `play` to start the selected contest environment.",
+    "Run `tui` for the full-screen contest cockpit.",
+)
 
 
 def shell_prompt(context: dict[str, Any] | None = None) -> str:
@@ -276,6 +285,7 @@ def _safe_dispatch(dispatch: Dispatch, words: list[str]) -> int:
 def run_shell(dispatch: Dispatch) -> int:
     setup_readline()
     print("Nitro AI Judge Interactive Shell. Type `help` for commands.")
+    print(f"Hint: {random.choice(SHELL_HINTS)}")
     try:
         while True:
             try:

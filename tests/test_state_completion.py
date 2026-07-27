@@ -469,6 +469,10 @@ class CompletionTests(unittest.TestCase):
             completion.candidates(["play", ""], context), list(completion.PLAY_ACTIONS)
         )
         self.assertEqual(
+            completion.candidates(["play", "cancel", ""], context),
+            ["--help", "--yes"],
+        )
+        self.assertEqual(
             completion.candidates(["play", "logs", ""], context),
             ["--follow", "--help", "--tail", "--yes", "-f"],
         )

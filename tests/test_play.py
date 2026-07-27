@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from nitro_ai_judge_cli import cli, play, state
 from nitro_ai_judge_cli.play_manager_client import ManagerClient
@@ -25,6 +25,11 @@ class FakeClient:
 
     def __init__(self) -> None:
         self.actions: list[tuple[str, str, str, dict]] = []
+        self.cancelled: list[str] = []
+        self.latest_operation: dict | None = {
+            "id": "op-1",
+            "status": "running",
+        }
 
     def info(self) -> dict:
         return {"identity": "naij-play-manager", "api_version": 1}
@@ -47,6 +52,18 @@ class FakeClient:
 
     def competition(self, org: str, competition: str) -> dict:
         return self.wait_operation("x")["result"]
+
+    def competitions(self) -> list[dict]:
+        return [
+            {
+                "reference": "org/contest",
+                "operation": self.latest_operation,
+            }
+        ]
+
+    def cancel(self, operation_id: str) -> dict:
+        self.cancelled.append(operation_id)
+        return {"id": operation_id, "status": "cancelled"}
 
     def logs(self, org: str, competition: str, *, tail: int) -> dict:
         return {"logs": "safe logs", "tail": tail}
@@ -79,6 +96,42 @@ class PlayProtocolTests(unittest.TestCase):
 
 
 class PlayCommandTests(unittest.TestCase):
+    def test_bare_play_prints_ordered_first_run_checklist(self) -> None:
+        output = io.StringIO()
+        with (
+            patch.object(cli, "load_context", return_value={}),
+            patch.object(cli, "load_state", return_value=None),
+            patch.object(cli, "cmd_play", side_effect=AssertionError("dispatched")),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(cli.main(["play"]), 1)
+        self.assertEqual(
+            output.getvalue().splitlines(),
+            [
+                "Complete Play setup:",
+                "1. naij login",
+                "2. naij use ORG/COMP",
+                "3. naij play",
+            ],
+        )
+
+    def test_bare_play_with_login_prints_final_two_steps(self) -> None:
+        output = io.StringIO()
+        with (
+            patch.object(cli, "load_context", return_value={}),
+            patch.object(cli, "load_state", return_value={"access_token": "token"}),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(cli.main(["play"]), 1)
+        self.assertEqual(
+            output.getvalue().splitlines(),
+            [
+                "Complete Play setup:",
+                "1. naij use ORG/COMP",
+                "2. naij play",
+            ],
+        )
+
     def test_yes_repair_preserves_saved_manager_configuration(self) -> None:
         config = {
             "bind": "0.0.0.0",
@@ -108,6 +161,46 @@ class PlayCommandTests(unittest.TestCase):
             public_url="https://play.example:54443",
             update=True,
         )
+
+    def test_manager_setup_spinner_stops_on_success_and_error(self) -> None:
+        for outcome in ({"manager_version": "3.0.1"}, RuntimeError("failed")):
+            with self.subTest(outcome=type(outcome).__name__):
+                spinner = Mock()
+                spinner.start.return_value = spinner
+                with (
+                    patch.object(play, "Spinner", return_value=spinner) as spinner_class,
+                    patch.object(
+                        play,
+                        "install_manager",
+                        side_effect=outcome if isinstance(outcome, Exception) else None,
+                        return_value=outcome if isinstance(outcome, dict) else None,
+                    ),
+                ):
+                    if isinstance(outcome, Exception):
+                        with self.assertRaisesRegex(RuntimeError, "failed"):
+                            play._setup_manager()
+                    else:
+                        self.assertEqual(play._setup_manager(), outcome)
+                spinner_class.assert_called_once_with(
+                    play.MANAGER_SETUP_LABEL, stream=play.sys.stdout
+                )
+                spinner.stop.assert_called_once_with()
+
+    def test_manager_setup_ctrl_c_returns_130_after_spinner_cleanup(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["play", "manager", "install", "--yes"]
+        )
+        spinner = Mock()
+        spinner.start.return_value = spinner
+        output = io.StringIO()
+        with (
+            patch.object(play, "Spinner", return_value=spinner),
+            patch.object(play, "install_manager", side_effect=KeyboardInterrupt),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(play.cmd_play(args), 130)
+        spinner.stop.assert_called_once_with()
+        self.assertEqual(output.getvalue(), "Manager setup interrupted.\n")
 
     def test_long_action_is_polled_and_returns_snapshot(self) -> None:
         client = FakeClient()
@@ -199,6 +292,81 @@ class PlayCommandTests(unittest.TestCase):
         with patch.object(play, "_client", return_value=client):
             self.assertEqual(play.cmd_play(delete_image), 0)
         self.assertEqual(client.actions[0][2], "delete-image")
+
+        cancel = parser.parse_args(["play", "cancel", "org/contest"])
+        self.assertEqual(cancel.play_action, "cancel")
+        help_output = io.StringIO()
+        with redirect_stdout(help_output), self.assertRaises(SystemExit) as shown:
+            parser.parse_args(["play", "--help"])
+        self.assertEqual(shown.exception.code, 0)
+        self.assertIn("cancel", help_output.getvalue())
+
+    def test_cancel_defaults_to_selected_contest(self) -> None:
+        context = {
+            "contest": {
+                "organizationSlug": "org",
+                "competitionSlug": "contest",
+            }
+        }
+        client = FakeClient()
+        with (
+            patch.object(cli, "load_context", return_value=context),
+            patch.object(play, "_client", return_value=client),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(cli.main(["play", "cancel"]), 0)
+        self.assertEqual(client.cancelled, ["op-1"])
+
+    def test_cancel_reports_inactive_and_completed_race(self) -> None:
+        client = FakeClient()
+        client.latest_operation = {"id": "op-1", "status": "complete"}
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                play.cmd_play_cancel("org", "contest", client=client), 1
+            )
+        self.assertEqual(client.cancelled, [])
+        self.assertIn("No active operation", output.getvalue())
+
+        client.latest_operation = {"id": "op-2", "status": "running"}
+        client.cancel = Mock(return_value={"id": "op-2", "status": "complete"})
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                play.cmd_play_cancel("org", "contest", client=client), 0
+            )
+        self.assertIn("already completed", output.getvalue())
+
+    def test_ctrl_c_while_waiting_prints_non_cancelling_guidance(self) -> None:
+        client = FakeClient()
+        client.wait_operation = Mock(side_effect=KeyboardInterrupt)
+        args = cli.build_parser().parse_args(
+            ["play", "play", "org/contest"]
+        )
+        output = io.StringIO()
+        with patch.object(play, "_client", return_value=client), redirect_stdout(output):
+            self.assertEqual(play.cmd_play(args), 130)
+        self.assertEqual(
+            output.getvalue().splitlines()[-2:],
+            [
+                "Status: naij play status org/contest",
+                "Cancel: naij play cancel org/contest",
+            ],
+        )
+        self.assertEqual(client.cancelled, [])
+
+    def test_ctrl_c_outside_wait_has_no_cancellation_guidance(self) -> None:
+        args = cli.build_parser().parse_args(
+            ["play", "delete-image", "org/contest"]
+        )
+        output = io.StringIO()
+        with (
+            patch.object(play.sys.stdin, "isatty", return_value=True),
+            patch("builtins.input", side_effect=KeyboardInterrupt),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(play.cmd_play(args), 130)
+        self.assertEqual(output.getvalue(), "Interrupted.\n")
 
     def test_image_deletion_requires_yes_without_tty(self) -> None:
         args = cli.build_parser().parse_args(

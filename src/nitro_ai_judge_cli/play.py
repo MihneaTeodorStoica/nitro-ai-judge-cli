@@ -25,12 +25,14 @@ from .play_protocol import (
     DEFAULT_MANAGER_IMAGE,
     DEFAULT_MANAGER_PORT,
     WireError,
+    parse_version,
     validate_competition,
 )
 from .ui import Spinner
 
 
 PLAY_WAIT_TIMEOUT = 120
+MANAGER_SETUP_LABEL = "Installing Play manager (pulling image and waiting for health)\u2026"
 PLAY_ACTIONS = {
     "pull",
     "play",
@@ -46,9 +48,18 @@ PLAY_ACTIONS = {
     "logs",
     "ps",
     "status",
+    "cancel",
     "open",
     "manager",
 }
+
+
+class ManagerSetupInterrupted(Exception):
+    pass
+
+
+class OperationWaitInterrupted(Exception):
+    pass
 
 
 def parse_competition_ref(parts: list[str]) -> tuple[str, str]:
@@ -61,19 +72,56 @@ def parse_competition_ref(parts: list[str]) -> tuple[str, str]:
     return validate_competition(org, competition)
 
 
+def _setup_manager(**options: Any) -> dict[str, Any]:
+    spinner = Spinner(MANAGER_SETUP_LABEL, stream=sys.stdout).start()
+    try:
+        return install_manager(**options)
+    except KeyboardInterrupt as exc:
+        raise ManagerSetupInterrupted from exc
+    finally:
+        spinner.stop()
+
+
+def _manager_receipt(
+    info: dict[str, Any], *, public_url: str | None, port: int
+) -> None:
+    url = public_url or f"http://localhost:{port}"
+    print(f"Play manager {info.get('manager_version')} is healthy at {url}/nitro/")
+
+
 def _install_or_repair_manager() -> dict[str, Any]:
     config = load_manager_config()
     if not config:
-        return install_manager()
-    return install_manager(
+        info = _setup_manager()
+        _manager_receipt(info, public_url=None, port=DEFAULT_MANAGER_PORT)
+        return info
+    port = int(config.get("port") or DEFAULT_MANAGER_PORT)
+    public_url = config.get("public_url")
+    info = _setup_manager(
         bind=str(config.get("bind") or DEFAULT_MANAGER_BIND),
-        port=int(config.get("port") or DEFAULT_MANAGER_PORT),
+        port=port,
         image=str(config.get("image") or DEFAULT_MANAGER_IMAGE),
         tls_cert=config.get("tls_cert"),
         tls_key=config.get("tls_key"),
-        public_url=config.get("public_url"),
+        public_url=public_url,
         update=True,
     )
+    _manager_receipt(info, public_url=public_url, port=port)
+    return info
+
+
+def _update_image(image: str) -> str:
+    repository, separator, tag = image.rpartition(":")
+    default_repository, _, default_tag = DEFAULT_MANAGER_IMAGE.rpartition(":")
+    version = parse_version(tag)
+    if (
+        separator
+        and repository == default_repository
+        and version != (0, 0, 0)
+        and version < parse_version(default_tag)
+    ):
+        return DEFAULT_MANAGER_IMAGE
+    return image
 
 
 def _client(*, yes: bool = False, interactive: bool = True) -> ManagerClient:
@@ -134,6 +182,8 @@ def perform_play_action(
             timeout=timeout,
             progress=progress,
         )
+    except KeyboardInterrupt as exc:
+        raise OperationWaitInterrupted from exc
     finally:
         if spinner is not None:
             spinner.stop()
@@ -258,6 +308,38 @@ def cmd_play_stop(
     return 0
 
 
+def cmd_play_cancel(
+    org: str,
+    competition: str,
+    *,
+    client: ManagerClient | None = None,
+) -> int:
+    client = client or _client(interactive=False)
+    reference = f"{org}/{competition}"
+    competition_state = next(
+        (
+            item
+            for item in client.competitions()
+            if str(item.get("reference") or "") == reference
+        ),
+        None,
+    )
+    operation = competition_state.get("operation") if competition_state else None
+    operation_id = str(operation.get("id") or "") if isinstance(operation, dict) else ""
+    if not operation_id or operation.get("status") not in {"queued", "running"}:
+        print(f"No active operation for {reference}.")
+        return 1
+    cancelled = client.cancel(operation_id)
+    status = str(cancelled.get("status") or "")
+    if status == "complete":
+        print(f"Operation for {reference} already completed before cancellation.")
+    elif status == "cancelled":
+        print(f"Cancelled active operation for {reference}.")
+    else:
+        print(f"Operation for {reference} is already {status or 'finished'}.")
+    return 0
+
+
 def cmd_play_down(
     org: str,
     competition: str,
@@ -304,26 +386,32 @@ def cmd_manager(args: argparse.Namespace) -> int:
         current = load_manager_config() or {}
         bind = args.bind if args.bind is not None else current.get("bind", DEFAULT_MANAGER_BIND)
         port = args.port if args.port is not None else int(current.get("port", DEFAULT_MANAGER_PORT))
-        image = (
+        image = str(
             args.image
             if args.image is not None
             else current.get("image")
             or os.environ.get("NAIJ_PLAY_MANAGER_IMAGE")
             or DEFAULT_MANAGER_IMAGE
         )
+        if action == "update" and args.image is None:
+            image = _update_image(image)
         tls_cert = args.tls_cert if args.tls_cert is not None else current.get("tls_cert")
         tls_key = args.tls_key if args.tls_key is not None else current.get("tls_key")
         public_url = args.public_url if args.public_url is not None else current.get("public_url")
-        info = install_manager(
-            bind=bind,
-            port=port,
-            image=image,
-            tls_cert=tls_cert,
-            tls_key=tls_key,
-            public_url=public_url,
-            update=action == "update",
-        )
-        print(f"Play manager {info.get('manager_version')} is healthy at {public_url or f'http://localhost:{port}'}/nitro/")
+        try:
+            info = _setup_manager(
+                bind=bind,
+                port=port,
+                image=image,
+                tls_cert=tls_cert,
+                tls_key=tls_key,
+                public_url=public_url,
+                update=action == "update",
+            )
+        except ManagerSetupInterrupted:
+            print("Manager setup interrupted.")
+            return 130
+        _manager_receipt(info, public_url=public_url, port=port)
         return 0
     if action == "status":
         value = manager_status()
@@ -397,6 +485,8 @@ def cmd_play(args: argparse.Namespace) -> int:
         elif action == "ps":
             print(load_play_ps(org, competition, client=client))
             return 0
+        elif action == "cancel":
+            return cmd_play_cancel(org, competition, client=client)
         if action == "logs":
             if args.follow:
                 for line in client.follow_logs(org, competition):
@@ -453,6 +543,18 @@ def cmd_play(args: argparse.Namespace) -> int:
         if result.get("jupyter_url"):
             print(f"Jupyter: {client.base_url}{result['jupyter_url']}")
         return 0
+    except ManagerSetupInterrupted:
+        print("Manager setup interrupted.")
+        return 130
+    except OperationWaitInterrupted:
+        reference = f"{org}/{competition}"
+        print("Operation wait interrupted; the manager operation was not cancelled.")
+        print(f"Status: naij play status {reference}")
+        print(f"Cancel: naij play cancel {reference}")
+        return 130
+    except KeyboardInterrupt:
+        print("Interrupted.")
+        return 130
     except (ManagerConnectionError, RuntimeError, ValueError, WireError) as exc:
         print(f"Error: {exc}")
         if isinstance(exc, WireError) and exc.stage:
@@ -527,6 +629,7 @@ def populate_play_actions(actions: argparse._SubParsersAction) -> None:
         ("stop", "Stop containers without removing them"),
         ("restart", "Restart competition containers"),
         ("status", "Show image, workspace, and service state"),
+        ("cancel", "Cancel the active competition operation"),
         ("ps", "Show a compact runtime snapshot"),
         ("open", "Open the stable Jupyter URL"),
         ("delete-container", "Delete containers and private network, preserving workspace"),

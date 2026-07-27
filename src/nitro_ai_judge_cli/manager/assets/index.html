@@ -78,7 +78,14 @@
       <div class="live-alert-actions"><button type="button" class="quiet-button" id="live-alert-retry">Retry</button><button type="button" class="quiet-button" id="live-alert-dismiss">Dismiss</button></div>
     </div>
     <p class="notice" id="sync-notice" hidden>Nitro login required. <button type="button" class="quiet-button" id="nitro-login-open">Sign in</button></p>
-    <p class="result-count" id="result-count" aria-live="polite">Loading competitions…</p>
+    <div class="result-summary">
+      <p class="result-count" id="result-count" aria-live="polite">Loading competitions…</p>
+      <nav class="pagination" data-pagination aria-label="Competition pages, top" hidden>
+        <button type="button" class="quiet-button" data-page-action="previous">Previous</button>
+        <span data-page-status aria-live="polite"></span>
+        <button type="button" class="quiet-button" data-page-action="next">Next</button>
+      </nav>
+    </div>
 
     <section class="ledger" aria-label="Competitions">
       <table>
@@ -91,12 +98,17 @@
         <button type="button" class="quiet-button" id="empty-action" hidden></button>
       </div>
     </section>
-    <nav class="pagination" id="pagination" aria-label="Competition pages" hidden>
-      <button type="button" class="quiet-button" id="previous-page">Previous</button>
-      <span id="page-status" aria-live="polite"></span>
-      <button type="button" class="quiet-button" id="next-page">Next</button>
+    <nav class="pagination" data-pagination aria-label="Competition pages, bottom" hidden>
+      <button type="button" class="quiet-button" data-page-action="previous">Previous</button>
+      <span data-page-status></span>
+      <button type="button" class="quiet-button" data-page-action="next">Next</button>
     </nav>
   </main>
+
+  <footer class="site-footer">
+    Made with &lt;3 by Mihnea-Teodor Stoica, for the
+    <span class="judge-preview" tabindex="0" aria-describedby="nitro-preview">Nitro AI Judge<span class="judge-preview-card" id="nitro-preview" role="tooltip"><img src="/nitro/assets/nitro-duck.png" alt="Brown-and-white hand-drawn Nitro duck mascot"></span></span>
+  </footer>
 
   <template id="competition-row-template">
     <tr class="competition-row">

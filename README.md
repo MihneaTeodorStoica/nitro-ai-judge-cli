@@ -256,6 +256,7 @@ Install the manager once, then start a competition:
 naij play manager install --yes
 naij play algolymp/algolymp-preojia-ix-x
 naij play status algolymp/algolymp-preojia-ix-x
+naij play cancel algolymp/algolymp-preojia-ix-x
 naij play logs algolymp/algolymp-preojia-ix-x
 naij play logs -f algolymp/algolymp-preojia-ix-x
 naij play stop algolymp/algolymp-preojia-ix-x
@@ -284,6 +285,7 @@ Lifecycle behavior:
 - `delete-workspace` requires the full `organization/competition` reference in
   interactive use. Automation must pass `--force`.
 - `logs` is redacted before it leaves the manager; `logs --follow` streams it.
+- `cancel` requests cancellation of the latest queued or running operation.
 - `--gpu` requires GPU access, `--no-gpu` disables it, and the default probes
   automatically. `--pull always|missing|never` retains Compose-style policy.
 - `--open` opens Jupyter after a successful `play` or `recreate`; commands do
@@ -463,7 +465,7 @@ python3 -m twine check dist/*
 docker build -f manager/Dockerfile -t naij-play-manager:dev .
 NAIJ_DOCKER_INTEGRATION=1 NAIJ_PLAY_MANAGER_IMAGE=naij-play-manager:dev \
   python3 -m unittest discover -s tests/integration -v
-git tag v3.0.0
+git tag v3.0.1
 git push origin main --tags
 ```
 

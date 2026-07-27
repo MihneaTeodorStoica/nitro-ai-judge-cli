@@ -192,13 +192,6 @@ class DockerBackend:
             f"nitroai/{org}-{competition}-judge-proxy:latest",
         )
 
-    @staticmethod
-    def fallback_aliases(org: str, competition: str) -> tuple[str, str]:
-        return (
-            f"naij-fallback/{org}-{competition}-notebook:latest",
-            f"naij-fallback/{org}-{competition}-judge-proxy:latest",
-        )
-
     def compose_path(self, org: str, competition: str) -> str:
         return os.path.join(self.projects_dir, f"{org}-{competition}.json")
 
@@ -271,22 +264,27 @@ class DockerBackend:
 
     async def images(self, org: str, competition: str) -> dict[str, Any]:
         primary = self.image_names(org, competition)
-        aliases = self.fallback_aliases(org, competition)
         ready = await asyncio.gather(
-            *(self._image_present(image) for image in (*primary, *aliases))
+            *(self._image_present(image) for image in (*primary, *FALLBACK_IMAGES))
         )
         saved = self._saved_images(org, competition)
+        legacy_fallbacks = (
+            f"naij-fallback/{org}-{competition}-notebook:latest",
+            f"naij-fallback/{org}-{competition}-judge-proxy:latest",
+        )
         values: dict[str, Any] = {}
         for index, role in enumerate(("notebook", "proxy")):
             primary_ready, fallback_ready = ready[index], ready[index + 2]
-            use_fallback = fallback_ready and (
-                not primary_ready or bool(saved and saved[index] == aliases[index])
+            use_fallback = fallback_ready and bool(
+                saved
+                and saved[index]
+                in (FALLBACK_IMAGES[index], legacy_fallbacks[index])
             )
             values[role] = {
-                "name": aliases[index] if use_fallback else primary[index],
+                "name": FALLBACK_IMAGES[index] if use_fallback else primary[index],
                 "state": (
                     ImageState.READY.value
-                    if primary_ready or fallback_ready
+                    if primary_ready or use_fallback
                     else ImageState.MISSING.value
                 ),
                 "fallback": use_fallback,
@@ -802,7 +800,9 @@ class DockerBackend:
             )
         )
 
-    async def _pull(self, org: str, competition: str, policy: str, progress: Progress) -> None:
+    async def _pull(
+        self, org: str, competition: str, policy: str, progress: Progress
+    ) -> tuple[str, str]:
         if policy not in {"always", "missing", "never"}:
             raise WireError(
                 ErrorType.INVALID_REQUEST.value,
@@ -811,7 +811,6 @@ class DockerBackend:
                 status=400,
             )
         images = self.image_names(org, competition)
-        aliases = self.fallback_aliases(org, competition)
         current = await self.images(org, competition)
         missing = [
             index
@@ -826,12 +825,19 @@ class DockerBackend:
                 status=409,
             )
         selected = list(range(2)) if policy == "always" else missing
+        resolved = [
+            current[role].get("name") or images[index]
+            if current[role]["state"] == ImageState.READY.value
+            else images[index]
+            for index, role in enumerate(("notebook", "proxy"))
+        ]
         for step, index in enumerate(selected, 1):
             image = images[index]
             message = f"Pulling contest image {step}/{len(selected)}: {image}"
             await progress("pulling", message)
             try:
                 await self._pull_image(image, message, progress)
+                resolved[index] = image
             except WireError as error:
                 if not self._image_not_found(error):
                     raise
@@ -842,7 +848,8 @@ class DockerBackend:
                 )
                 fallback_message = f"Pulling fallback image {step}/{len(selected)}: {fallback}"
                 await self._pull_image(fallback, fallback_message, progress)
-                await self.run(["docker", "tag", fallback, aliases[index]], timeout=60)
+                resolved[index] = fallback
+        return resolved[0], resolved[1]
 
     async def _assert_owned_containers(self, org: str, competition: str) -> None:
         key = f"{org}/{competition}"
@@ -952,7 +959,6 @@ class DockerBackend:
                 raise
 
         fallback = FALLBACK_IMAGES[1]
-        alias = self.fallback_aliases(org, competition)[1]
         message = f"Pulling compatible submission proxy fallback: {fallback}"
         await progress(
             "pulling",
@@ -960,11 +966,10 @@ class DockerBackend:
         )
         if not await self._image_present(fallback):
             await self._pull_image(fallback, message, progress)
-        await self.run(["docker", "tag", fallback, alias], timeout=60)
 
         with open(self.compose_path(org, competition), encoding="utf-8") as stream:
             compose = json.load(stream)
-        compose["services"]["submission-proxy"]["image"] = alias
+        compose["services"]["submission-proxy"]["image"] = fallback
         self._atomic_compose(self.compose_path(org, competition), compose)
         await progress("applying", "Restarting Play services with compatible fallback")
         await self.run(
@@ -1004,9 +1009,31 @@ class DockerBackend:
         names = self.names(org, competition)
         compose_path = self.compose_path(org, competition)
         pull_policy = str(options.get("pull") or "missing")
+        resolved_images = None
         if action in {"pull", "play", "recreate"}:
-            await self._pull(org, competition, pull_policy, progress)
+            resolved_images = await self._pull(
+                org, competition, pull_policy, progress
+            )
         if action == "pull":
+            assert resolved_images is not None
+            if os.path.isfile(compose_path):
+                with open(compose_path, encoding="utf-8") as stream:
+                    compose = json.load(stream)
+            elif any(
+                resolved_images[index] == FALLBACK_IMAGES[index]
+                for index in range(2)
+            ):
+                compose = {
+                    "services": {
+                        "jupyter-server": {},
+                        "submission-proxy": {},
+                    }
+                }
+            else:
+                return await self.inspect_competition(org, competition)
+            compose["services"]["jupyter-server"]["image"] = resolved_images[0]
+            compose["services"]["submission-proxy"]["image"] = resolved_images[1]
+            self._atomic_compose(compose_path, compose)
             return await self.inspect_competition(org, competition)
         if action in {"play", "recreate"}:
             await progress("preparing", "Preparing private workspace and configuration")
@@ -1051,7 +1078,8 @@ class DockerBackend:
             gpu_requested = (
                 "required" if options.get("gpu") is True else "disabled" if options.get("gpu") is False else "auto"
             )
-            images = await self._preferred_images(org, competition)
+            assert resolved_images is not None
+            images = resolved_images
             gpu = await self._gpu_enabled(images[0], gpu_requested)
             compose = self._compose(
                 org,
@@ -1102,12 +1130,14 @@ class DockerBackend:
                     stage="validating",
                     status=409,
                 )
-            for image in (*self.image_names(org, competition), *self.fallback_aliases(org, competition)):
+            for image in self.image_names(org, competition):
                 if await self._image_present(image):
                     await progress("applying", f"Removing image tag {image}")
                     await self.run(["docker", "image", "rm", image], timeout=60)
             return await self.inspect_competition(org, competition)
-        if not os.path.isfile(compose_path):
+        if not os.path.isfile(compose_path) or self._saved_workspace(
+            org, competition
+        ) is None:
             raise WireError(
                 ErrorType.NOT_FOUND.value,
                 f"No Play environment exists for {org}/{competition}; run play first",

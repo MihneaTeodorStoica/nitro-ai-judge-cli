@@ -50,13 +50,6 @@ class FakeBackend:
             f"nitroai/{org}-{competition}-judge-proxy:latest",
         )
 
-    @staticmethod
-    def fallback_aliases(org: str, competition: str) -> tuple[str, str]:
-        return (
-            f"naij-fallback/{org}-{competition}-notebook:latest",
-            f"naij-fallback/{org}-{competition}-judge-proxy:latest",
-        )
-
     async def discover(self) -> list[dict]:
         return []
 
@@ -348,7 +341,6 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_s3_dependent_primary_proxy_retries_with_fallback(self) -> None:
         primary = self.backend.image_names("org", "contest")
-        aliases = self.backend.fallback_aliases("org", "contest")
         self.backend._atomic_compose(
             self.backend.compose_path("org", "contest"),
             self.backend._compose(
@@ -375,9 +367,11 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.backend._pull_image.assert_awaited_once()
-        self.assertIn(
-            ["docker", "tag", FALLBACK_IMAGES[1], aliases[1]],
-            [call.args[0] for call in self.backend.run.await_args_list],
+        self.assertFalse(
+            any(
+                call.args[0][:2] == ["docker", "tag"]
+                for call in self.backend.run.await_args_list
+            )
         )
         self.assertIn(
             self.backend.compose_command(
@@ -385,13 +379,19 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
             ),
             [call.args[0] for call in self.backend.run.await_args_list],
         )
-        self.assertEqual(self.backend._saved_images("org", "contest"), (primary[0], aliases[1]))
+        self.assertEqual(
+            self.backend._saved_images("org", "contest"),
+            (primary[0], FALLBACK_IMAGES[1]),
+        )
+        self.backend._image_present = AsyncMock(
+            side_effect=lambda image: image in (primary[0], FALLBACK_IMAGES[1])
+        )
         images = await self.backend.images("org", "contest")
         self.assertFalse(images["notebook"]["fallback"])
         self.assertTrue(images["proxy"]["fallback"])
         self.assertEqual(
             await self.backend._preferred_images("org", "contest"),
-            (primary[0], aliases[1]),
+            (primary[0], FALLBACK_IMAGES[1]),
         )
 
     async def test_proxy_fallback_does_not_mask_other_startup_errors(self) -> None:
@@ -410,10 +410,7 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.backend._pull_image.assert_not_awaited()
 
     async def test_delete_image_removes_only_scoped_tags(self) -> None:
-        expected = [
-            *self.backend.image_names("org", "contest"),
-            *self.backend.fallback_aliases("org", "contest"),
-        ]
+        expected = list(self.backend.image_names("org", "contest"))
         self.backend.run = AsyncMock(return_value=(0, "", ""))
         self.backend._image_present = AsyncMock(return_value=True)
         snapshot = {
@@ -493,34 +490,44 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
 
         self.backend.run = AsyncMock(side_effect=run)
         progress = AsyncMock()
-        await self.backend._pull("org", "contest", "missing", progress)
+        resolved = await self.backend._pull("org", "contest", "missing", progress)
 
         commands = [call.args[0] for call in self.backend.run.await_args_list]
-        for fallback, alias in zip(
-            FALLBACK_IMAGES, self.backend.fallback_aliases("org", "contest")
-        ):
+        for fallback in FALLBACK_IMAGES:
             self.assertIn(["docker", "pull", fallback], commands)
-            self.assertIn(["docker", "tag", fallback, alias], commands)
+        self.assertFalse(any(command[:2] == ["docker", "tag"] for command in commands))
         self.assertTrue(
             any(
                 "using fallback" in call.args[1]
                 for call in progress.await_args_list
             )
         )
+        self.assertEqual(resolved, FALLBACK_IMAGES)
 
-    async def test_fallback_images_are_reported_as_fallbacks(self) -> None:
-        aliases = self.backend.fallback_aliases("org", "contest")
+    async def test_saved_legacy_aliases_select_shared_fallbacks(self) -> None:
+        legacy = (
+            "naij-fallback/org-contest-notebook:latest",
+            "naij-fallback/org-contest-judge-proxy:latest",
+        )
+        self.backend._atomic_compose(
+            self.backend.compose_path("org", "contest"),
+            self.backend._compose(
+                "org", "contest", gpu=False, pull_policy="never", images=legacy
+            ),
+        )
         self.backend._image_present = AsyncMock(
-            side_effect=lambda image: image in aliases
+            side_effect=lambda image: image in FALLBACK_IMAGES
         )
         images = await self.backend.images("org", "contest")
         self.assertTrue(images["notebook"]["fallback"])
         self.assertEqual(images["notebook"]["fallback_source"], FALLBACK_IMAGES[0])
-        self.assertEqual(images["proxy"]["name"], aliases[1])
+        self.assertEqual(images["proxy"]["name"], FALLBACK_IMAGES[1])
         compose = self.backend._compose(
-            "org", "contest", gpu=False, pull_policy="never", images=aliases
+            "org", "contest", gpu=False, pull_policy="never", images=FALLBACK_IMAGES
         )
-        self.assertEqual(compose["services"]["jupyter-server"]["image"], aliases[0])
+        self.assertEqual(
+            compose["services"]["jupyter-server"]["image"], FALLBACK_IMAGES[0]
+        )
 
     async def test_network_pull_errors_do_not_switch_to_fallback(self) -> None:
         self.backend.images = AsyncMock(
@@ -770,6 +777,7 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
                 "organization": "org",
                 "competition": "contest",
                 "reference": "org/contest",
+                "images": {"notebook": {"name": FALLBACK_IMAGES[0]}},
             },
         )
         owned = {
@@ -793,8 +801,13 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
                 }
             },
         }
+        fallback = {
+            "Type": "image",
+            "Actor": {"Attributes": {"name": FALLBACK_IMAGES[0]}},
+        }
         self.assertEqual(_docker_event_competitions(self.app, owned), {"org/contest"})
         self.assertEqual(_docker_event_competitions(self.app, image), {"org/contest"})
+        self.assertEqual(_docker_event_competitions(self.app, fallback), {"org/contest"})
         self.assertEqual(_docker_event_competitions(self.app, foreign), set())
 
         self.backend.inspect_competition = AsyncMock(
@@ -1320,7 +1333,13 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('refresh ? "?refresh=true" : cached ? "?cached=true" : ""', script)
         self.assertIn('addEventListener("click", () => load({ refresh: true }))', script)
         self.assertIn("competition.operation", script)
-        self.assertIn('competition.image_fallback ? "fallback"', script)
+        self.assertIn("function effectiveImageState(competition)", script)
+        self.assertIn('operation?.stage === "pulling"', script)
+        self.assertIn('return "pulling"', script)
+        self.assertIn('operation.status === "failed"', script)
+        self.assertIn('return "error"', script)
+        self.assertIn("effectiveImageState(item) === imageFilter.dataset.value", script)
+        self.assertIn("status(imageStatus, effectiveImageState(competition))", script)
         self.assertIn(
             'actionButton("Remove images", "delete-image", "danger")', script
         )
@@ -1357,6 +1376,9 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             lifecycle.count("state.operationTimers.get(operationId) !== timer"), 2
         )
+        self.assertIn("previousImageState !== effectiveImageState(competition)", lifecycle)
+        self.assertIn("if (imageStateChanged) render()", lifecycle)
+        self.assertIn("else updateOperation(operationRow, latest)", lifecycle)
         clear_handler = script.split(
             'document.querySelector("#clear-operations")', 1
         )[1].split('document.querySelector("#theme-toggle")', 1)[0]
@@ -1393,10 +1415,17 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
             "background: color-mix(in srgb, var(--ink) 7%, transparent)",
             style_text,
         )
+        self.assertIn(".result-summary", style_text)
+        self.assertIn(".judge-preview:hover .judge-preview-card", style_text)
+        self.assertIn(".judge-preview:focus .judge-preview-card", style_text)
         page = await self.client.get("/nitro/", headers=self.host)
         html = await page.text()
-        self.assertIn('id="previous-page"', html)
-        self.assertIn('id="next-page"', html)
+        self.assertEqual(html.count("data-pagination"), 2)
+        self.assertEqual(html.count('data-page-action="previous"'), 2)
+        self.assertEqual(html.count('data-page-action="next"'), 2)
+        self.assertEqual(html.count("data-page-status"), 2)
+        self.assertNotIn('id="previous-page"', html)
+        self.assertNotIn('id="next-page"', html)
         self.assertIn('class="operation-dismiss"', html)
         self.assertIn('title="Dismiss" hidden>&times;</button>', html)
         self.assertIn('id="clear-operations"', html)
@@ -1408,6 +1437,14 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="remove-image-confirm">Remove images', html)
         self.assertIn('autofocus>Cancel', html)
         self.assertNotIn('class="route-mark"', html)
+        self.assertIn("Made with &lt;3 by Mihnea-Teodor Stoica, for the", html)
+        self.assertIn('class="judge-preview" tabindex="0"', html)
+        self.assertIn('src="/nitro/assets/nitro-duck.png"', html)
+        startup = script.rsplit("setInterval(updateElapsedClocks, 100)", 1)[1]
+        self.assertIn(
+            "load().then(() => load({ refresh: true })).finally(connectEvents)",
+            startup,
+        )
 
     async def test_dashboard_ready_action_is_play_not_start(self) -> None:
         response = await self.client.get("/nitro/assets/app.js", headers=self.host)
@@ -1451,6 +1488,9 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         logo = await self.client.get("/nitro/assets/logo.svg", headers=self.host)
         self.assertEqual(logo.content_type, "image/svg+xml")
         self.assertNotIn("<!DOCTYPE", await logo.text())
+        duck = await self.client.get("/nitro/assets/nitro-duck.png", headers=self.host)
+        self.assertEqual(duck.content_type, "image/png")
+        self.assertTrue((await duck.read()).startswith(b"\x89PNG\r\n\x1a\n"))
         inter = await self.client.get("/nitro/assets/inter-latin.woff2", headers=self.host)
         self.assertEqual(inter.content_type, "font/woff2")
 
