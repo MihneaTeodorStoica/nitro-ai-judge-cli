@@ -10,12 +10,12 @@ from typing import Any
 
 API_VERSION = 1
 MANAGER_IDENTITY = "naij-play-manager"
-MANAGER_VERSION = "3.0.2"
+MANAGER_VERSION = "3.0.3"
 MINIMUM_CLI_VERSION = "3.0.0"
 DEFAULT_MANAGER_BIND = "127.0.0.1"
 DEFAULT_MANAGER_PORT = 51123
 DEFAULT_MANAGER_IMAGE = (
-    "ghcr.io/mihneateodorstoica/naij-play-manager:3.0.2"
+    "ghcr.io/mihneateodorstoica/naij-play-manager:3.0.3"
 )
 BASE_PATH = "/nitro"
 

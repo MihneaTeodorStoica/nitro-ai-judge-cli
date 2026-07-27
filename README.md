@@ -290,6 +290,11 @@ Lifecycle behavior:
   automatically. `--pull always|missing|never` retains Compose-style policy.
 - `--open` opens Jupyter after a successful `play` or `recreate`; commands do
   not open a browser by default.
+- Environments saved by 3.0.2 keep their existing images on `start` and
+  `restart`. Their next `pull`, `play`, or `recreate` updates Compose state to
+  the current shared fallback images when contest-specific images are absent.
+  With `--pull never`, those exact fallback digests must already be cached;
+  otherwise the command fails without changing the saved environment.
 
 The retired competition `--port`, `--proxy-port`, and `--bind` flags produce
 guidance instead of publishing a container port. Configure the single manager
@@ -465,7 +470,7 @@ python3 -m twine check dist/*
 docker build -f manager/Dockerfile -t naij-play-manager:dev .
 NAIJ_DOCKER_INTEGRATION=1 NAIJ_PLAY_MANAGER_IMAGE=naij-play-manager:dev \
   python3 -m unittest discover -s tests/integration -v
-git tag v3.0.2
+git tag v3.0.3
 git push origin main --tags
 ```
 

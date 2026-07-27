@@ -140,6 +140,10 @@ class ManagerBackendModelTests(unittest.TestCase):
         self.assertNotIn("ports", proxy)
         self.assertEqual(notebook["environment"]["PROXY_URL"], "http://submission-proxy:9000")
         self.assertEqual(
+            notebook["environment"]["NITRO_SUBMISSION_PROXY_URL"],
+            "http://submission-proxy:9000",
+        )
+        self.assertEqual(
             notebook["environment"]["PROXY_URL_CLIENT"],
             "/nitro/competitions/org/contest/proxy/",
         )

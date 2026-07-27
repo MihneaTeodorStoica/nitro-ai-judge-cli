@@ -30,9 +30,13 @@ LABEL_PREFIX = "org.nitro-ai.naij.play"
 SHARED_NETWORK = "naij-play"
 PULL_PROGRESS_INTERVAL = 1
 # Nitro publishes no designated default; its generic test pair matches a real contest pair.
-FALLBACK_IMAGES = (
+V3_0_2_FALLBACK_IMAGES = (
     "nitroai/nitro-test-notebook@sha256:9dd89d1c276b550c1c9bf05b7cf60761996a3dec0bc3a013400221416d8ec22e",
     "nitroai/nitro-test-judge-proxy@sha256:46542d51497d689b7d57acf85b143dc52e4022246afedae0d04dc1325358fd24",
+)
+FALLBACK_IMAGES = (
+    "ghcr.io/mihneateodorstoica/nitro-contestant-notebook@sha256:d683327e259d4f1fa9a40203295269b3009a18e8a6d0274e17685efd0e9e3ee0",
+    "ghcr.io/mihneateodorstoica/nitro-submission-proxy@sha256:57fb32ae07fd6a231a317796508fa05b3d9902f1b2a2ee1be4937a5f85e39bea",
 )
 S3_PROXY_CONFIG_ERROR = (
     "Missing required environment variables: S3_URL, S3_BUCKET, S3_ACCESS_KEY_ID"
@@ -275,7 +279,7 @@ class DockerBackend:
         values: dict[str, Any] = {}
         for index, role in enumerate(("notebook", "proxy")):
             primary_ready, fallback_ready = ready[index], ready[index + 2]
-            use_fallback = fallback_ready and bool(
+            use_fallback = not primary_ready and fallback_ready and bool(
                 saved
                 and saved[index]
                 in (FALLBACK_IMAGES[index], legacy_fallbacks[index])
@@ -508,6 +512,7 @@ class DockerBackend:
             ],
             "environment": {
                 "PROXY_URL": "http://submission-proxy:9000",
+                "NITRO_SUBMISSION_PROXY_URL": "http://submission-proxy:9000",
                 "PROXY_URL_CLIENT": proxy_path,
                 **proxy_env,
             },
@@ -812,25 +817,37 @@ class DockerBackend:
             )
         images = self.image_names(org, competition)
         current = await self.images(org, competition)
+        saved = self._saved_images(org, competition)
         missing = [
             index
             for index, role in enumerate(("notebook", "proxy"))
             if current[role]["state"] != ImageState.READY.value
         ]
-        if policy == "never" and missing:
+        cached_migrations = {
+            index
+            for index in missing
+            if policy == "never"
+            and saved
+            and saved[index] == V3_0_2_FALLBACK_IMAGES[index]
+            and await self._image_present(FALLBACK_IMAGES[index])
+        }
+        unresolved = [index for index in missing if index not in cached_migrations]
+        if policy == "never" and unresolved:
             raise WireError(
                 ErrorType.OPERATION_FAILED.value,
-                f"Image is missing and pull policy is never: {images[missing[0]]}",
+                f"Image is missing and pull policy is never: {images[unresolved[0]]}",
                 stage="pulling",
                 status=409,
             )
-        selected = list(range(2)) if policy == "always" else missing
+        selected = list(range(2)) if policy == "always" else missing if policy == "missing" else []
         resolved = [
             current[role].get("name") or images[index]
             if current[role]["state"] == ImageState.READY.value
             else images[index]
             for index, role in enumerate(("notebook", "proxy"))
         ]
+        for index in cached_migrations:
+            resolved[index] = FALLBACK_IMAGES[index]
         for step, index in enumerate(selected, 1):
             image = images[index]
             message = f"Pulling contest image {step}/{len(selected)}: {image}"
