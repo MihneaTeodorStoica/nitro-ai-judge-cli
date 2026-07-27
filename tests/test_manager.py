@@ -1398,7 +1398,7 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="previous-page"', html)
         self.assertIn('id="next-page"', html)
         self.assertIn('class="operation-dismiss"', html)
-        self.assertIn('title="Dismiss" hidden>×</button>', html)
+        self.assertIn('title="Dismiss" hidden>&times;</button>', html)
         self.assertIn('id="clear-operations"', html)
         self.assertIn('rel="icon" type="image/svg+xml" href="/nitro/assets/logo.svg"', html)
         self.assertIn('class="brand-logo"', html)

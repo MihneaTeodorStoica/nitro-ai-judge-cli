@@ -182,9 +182,10 @@ class StateTests(unittest.TestCase):
         state.save_context({"contest": {"org": "o", "comp": "c"}})
         history = Path(state.prepare_history())
 
-        self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
-        for path in (root / "state.json", root / "context.json", history):
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)
+            for path in (root / "state.json", root / "context.json", history):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(json.loads((root / "state.json").read_text()), {"access_token": "secret"})
         self.assertFalse(any(item.name.startswith(".naij-") for item in root.iterdir()))
 
