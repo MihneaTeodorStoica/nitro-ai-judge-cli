@@ -367,13 +367,15 @@ def install_manager(
     image_present = run_process(["docker", "image", "inspect", image], check=False).returncode == 0
     if update or not image_present:
         run_process(["docker", "pull", image])
-    atomic_write(
-        paths["config"], (json.dumps(config, indent=2, sort_keys=True) + "\n").encode()
-    )
-    atomic_write(
-        paths["compose"], (json.dumps(compose, indent=2, sort_keys=True) + "\n").encode()
-    )
     try:
+        atomic_write(
+            paths["config"],
+            (json.dumps(config, indent=2, sort_keys=True) + "\n").encode(),
+        )
+        atomic_write(
+            paths["compose"],
+            (json.dumps(compose, indent=2, sort_keys=True) + "\n").encode(),
+        )
         run_process(_compose_command("up", "-d", "--remove-orphans"))
         info = _verify_manager()
         sync_manager_credentials(required=False)

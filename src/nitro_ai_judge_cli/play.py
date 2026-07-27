@@ -101,7 +101,7 @@ def _install_or_repair_manager() -> dict[str, Any]:
     info = _setup_manager(
         bind=str(config.get("bind") or DEFAULT_MANAGER_BIND),
         port=port,
-        image=str(config.get("image") or DEFAULT_MANAGER_IMAGE),
+        image=_update_image(str(config.get("image") or DEFAULT_MANAGER_IMAGE)),
         tls_cert=config.get("tls_cert"),
         tls_key=config.get("tls_key"),
         public_url=public_url,
@@ -119,13 +119,26 @@ def _update_image(image: str) -> str:
         separator
         and repository == default_repository
         and version != (0, 0, 0)
+        and tag == ".".join(map(str, version))
         and version < parse_version(default_tag)
     ):
         return DEFAULT_MANAGER_IMAGE
     return image
 
 
+def _migrate_manager_if_needed() -> bool:
+    config = load_manager_config()
+    if not config:
+        return False
+    image = str(config.get("image") or DEFAULT_MANAGER_IMAGE)
+    if _update_image(image) == image:
+        return False
+    _install_or_repair_manager()
+    return True
+
+
 def _client(*, yes: bool = False, interactive: bool = True) -> ManagerClient:
+    _migrate_manager_if_needed()
     try:
         client = ManagerClient.from_state()
         info = client.info()
@@ -394,7 +407,8 @@ def cmd_manager(args: argparse.Namespace) -> int:
             or os.environ.get("NAIJ_PLAY_MANAGER_IMAGE")
             or DEFAULT_MANAGER_IMAGE
         )
-        if action == "update" and args.image is None:
+        migrate = args.image is None and _update_image(image) != image
+        if args.image is None:
             image = _update_image(image)
         tls_cert = args.tls_cert if args.tls_cert is not None else current.get("tls_cert")
         tls_key = args.tls_key if args.tls_key is not None else current.get("tls_key")
@@ -407,7 +421,7 @@ def cmd_manager(args: argparse.Namespace) -> int:
                 tls_cert=tls_cert,
                 tls_key=tls_key,
                 public_url=public_url,
-                update=action == "update",
+                update=action == "update" or migrate,
             )
         except ManagerSetupInterrupted:
             print("Manager setup interrupted.")
@@ -427,6 +441,8 @@ def cmd_manager(args: argparse.Namespace) -> int:
             return 1
         return 0
     if action in {"start", "stop", "restart"}:
+        if action != "stop" and _migrate_manager_if_needed():
+            return 0
         if action == "start" and (
             not load_manager_config() or not manager_container_exists()
         ):

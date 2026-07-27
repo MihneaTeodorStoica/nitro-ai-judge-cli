@@ -499,7 +499,7 @@ wheels = [
 
 [[package]]
 name = "nitro-ai-judge-cli"
-version = "3.0.3"
+version = "3.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "textual" },

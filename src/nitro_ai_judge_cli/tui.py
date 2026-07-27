@@ -49,6 +49,7 @@ from .contests import (
     load_tasks,
 )
 from .play_manager_client import ManagerClient
+from .play import _migrate_manager_if_needed
 from .state import (
     CredentialsError,
     cached_items,
@@ -2331,5 +2332,10 @@ class NitroTUI(App[int]):
 
 
 def run_tui() -> int:
+    try:
+        _migrate_manager_if_needed()
+    except Exception as exc:
+        print(f"Play manager migration failed: {exc}")
+        return 1
     result = NitroTUI().run(mouse=True)
     return int(result or 0)

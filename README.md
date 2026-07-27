@@ -313,6 +313,11 @@ naij play manager sync-credentials
 naij play manager uninstall
 ```
 
+NAIJ automatically pulls and recreates an installed older official manager
+before the next Play command, TUI launch, `manager install`, `manager start`, or
+`manager restart`. Endpoint, TLS, private manager state, competition
+workspaces, and custom manager images are preserved.
+
 Uninstall removes the manager container and network but preserves its private
 SQLite volume, configuration, competition metadata, images, and every
 workspace. `manager purge --force` removes only manager-private SQLite state;
@@ -470,7 +475,7 @@ python3 -m twine check dist/*
 docker build -f manager/Dockerfile -t naij-play-manager:dev .
 NAIJ_DOCKER_INTEGRATION=1 NAIJ_PLAY_MANAGER_IMAGE=naij-play-manager:dev \
   python3 -m unittest discover -s tests/integration -v
-git tag v3.0.3
+git tag v3.0.4
 git push origin main --tags
 ```
 

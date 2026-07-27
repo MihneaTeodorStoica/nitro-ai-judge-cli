@@ -113,6 +113,11 @@ down without deleting the private state volume, competition metadata, or
 workspaces. Purge requires explicit force and removes only the labeled
 manager-private SQLite volume.
 
+Before command-line Play use, TUI launch, install, start, or restart, an older
+exact-version image from the official manager repository is updated through
+that rollback path. Current, newer, digest-pinned, local, and custom images are
+left unchanged.
+
 Legacy discovery examines only the known generated state root, whitelisted
 `.env` fields, exact Compose project/service labels, and inspected mounts. The
 manager lazily stops a verified old container on first use. It reuses an

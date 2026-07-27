@@ -115,9 +115,24 @@ class TUIEntrypointTests(unittest.TestCase):
 
         app = unittest.mock.Mock()
         app.run.return_value = 0
-        with patch.object(tui, "NitroTUI", return_value=app):
+        with (
+            patch.object(tui, "_migrate_manager_if_needed") as migrate,
+            patch.object(tui, "NitroTUI", return_value=app),
+        ):
             self.assertEqual(tui.run_tui(), 0)
+        migrate.assert_called_once_with()
         app.run.assert_called_once_with(mouse=True)
+
+    def test_tui_stops_when_manager_migration_fails(self) -> None:
+        output = io.StringIO()
+        with (
+            patch.object(tui, "_migrate_manager_if_needed", side_effect=RuntimeError("boom")),
+            patch.object(tui, "NitroTUI") as app,
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(tui.run_tui(), 1)
+        app.assert_not_called()
+        self.assertIn("Play manager migration failed: boom", output.getvalue())
 
 
 class TUIAuthSessionTests(unittest.IsolatedAsyncioTestCase):

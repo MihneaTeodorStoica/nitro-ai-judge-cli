@@ -162,6 +162,37 @@ class PlayCommandTests(unittest.TestCase):
             update=True,
         )
 
+    def test_client_forces_only_old_official_manager_images_forward(self) -> None:
+        cases = (
+            ("ghcr.io/mihneateodorstoica/naij-play-manager:3.0.3", True),
+            (play.DEFAULT_MANAGER_IMAGE, False),
+            ("ghcr.io/mihneateodorstoica/naij-play-manager:3.0.3-dev", False),
+            ("registry.example/manager:3.0.3", False),
+        )
+        for configured, migrates in cases:
+            with self.subTest(configured=configured):
+                client = FakeClient()
+                with (
+                    patch.object(
+                        play, "load_manager_config", return_value={"image": configured}
+                    ),
+                    patch.object(
+                        play,
+                        "_setup_manager",
+                        return_value={"manager_version": "3.0.4"},
+                    ) as setup,
+                    patch.object(play.ManagerClient, "from_state", return_value=client),
+                    redirect_stdout(io.StringIO()),
+                ):
+                    self.assertIs(play._client(interactive=False), client)
+                if migrates:
+                    self.assertEqual(
+                        setup.call_args.kwargs["image"], play.DEFAULT_MANAGER_IMAGE
+                    )
+                    self.assertTrue(setup.call_args.kwargs["update"])
+                else:
+                    setup.assert_not_called()
+
     def test_manager_setup_spinner_stops_on_success_and_error(self) -> None:
         for outcome in ({"manager_version": "3.0.2"}, RuntimeError("failed")):
             with self.subTest(outcome=type(outcome).__name__):
@@ -257,6 +288,35 @@ class PlayCommandTests(unittest.TestCase):
             else:
                 repair.assert_called_once_with()
                 compose_action.assert_not_called()
+
+    def test_manager_lifecycle_forces_only_needed_migrations(self) -> None:
+        for action, migrates in (
+            ("start", True),
+            ("restart", True),
+            ("start", False),
+            ("restart", False),
+            ("stop", False),
+        ):
+            args = cli.build_parser().parse_args(["play", "manager", action])
+            with (
+                self.subTest(action=action, migrates=migrates),
+                patch.object(
+                    play, "_migrate_manager_if_needed", return_value=migrates
+                ) as migrate,
+                patch.object(play, "load_manager_config", return_value={"image": "saved"}),
+                patch.object(play, "manager_container_exists", return_value=True),
+                patch.object(play, "manager_compose_action") as compose_action,
+                redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(play.cmd_manager(args), 0)
+            if action == "stop":
+                migrate.assert_not_called()
+            else:
+                migrate.assert_called_once_with()
+            if migrates:
+                compose_action.assert_not_called()
+            else:
+                compose_action.assert_called_once_with(action)
 
     def test_long_action_is_polled_and_returns_snapshot(self) -> None:
         client = FakeClient()
@@ -507,6 +567,60 @@ class ManagerConfigurationTests(unittest.TestCase):
         validate_manager_exposure(
             "127.0.0.1", tls_cert=None, tls_key=None, public_url=None
         )
+
+    def test_update_restores_config_when_compose_write_fails(self) -> None:
+        root = state.ensure_state_dir().play_manager
+        os.makedirs(root)
+        paths = play_manager_lifecycle.manager_paths()
+        old_config = {
+            "schema": 1,
+            "image": "manager:old",
+            "bind": "127.0.0.1",
+            "port": 51123,
+            "public_url": "http://localhost:51123",
+            "tls_cert": None,
+            "tls_key": None,
+            "dashboard_token": False,
+            "docker_context": "default",
+            "docker_host": "unix:///run/docker.sock",
+        }
+        old_compose = b'{"services":{"manager":{"image":"manager:old"}}}\n'
+        state.atomic_write(
+            paths["config"],
+            (json.dumps(old_config, indent=2, sort_keys=True) + "\n").encode(),
+        )
+        state.atomic_write(paths["compose"], old_compose)
+        real_atomic_write = state.atomic_write
+        writes = 0
+
+        def fail_second_write(path: str, data: bytes, **options: object) -> None:
+            nonlocal writes
+            writes += 1
+            if writes == 2:
+                raise OSError("disk full")
+            real_atomic_write(path, data, **options)
+
+        endpoint = DockerEndpoint(
+            "default", "unix:///run/docker.sock", "/run/docker.sock", "linux"
+        )
+        process = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with (
+            patch.object(play_manager_lifecycle, "resolve_docker_endpoint", return_value=endpoint),
+            patch.object(play_manager_lifecycle, "_port_in_use", return_value=False),
+            patch.object(play_manager_lifecycle, "_write_secret"),
+            patch.object(play_manager_lifecycle, "run_process", return_value=process) as run,
+            patch.object(
+                play_manager_lifecycle, "atomic_write", side_effect=fail_second_write
+            ),
+            self.assertRaisesRegex(OSError, "disk full"),
+        ):
+            play_manager_lifecycle.install_manager(image="manager:new", update=True)
+
+        with open(paths["config"], encoding="utf-8") as stream:
+            self.assertEqual(json.load(stream), old_config)
+        with open(paths["compose"], "rb") as stream:
+            self.assertEqual(stream.read(), old_compose)
+        self.assertEqual(run.call_args.args[0][-3:], ["up", "-d", "--remove-orphans"])
 
     def test_credentials_are_normalized_and_bounded(self) -> None:
         value = normalized_credentials(
