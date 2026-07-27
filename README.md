@@ -120,6 +120,14 @@ Release screenshots and the keyboard walkthrough will be added under
 `docs/assets/` with the `v3.0.0` release capture; the recording contract is in
 [`docs/assets/README.md`](docs/assets/README.md).
 
+### Help wanted: TUI improvements
+
+Contributions to the TUI are welcome, especially improvements to interaction
+polish, visual clarity, accessibility, and behavior across terminal sizes.
+Please open an issue before starting a large redesign, preserve keyboard access
+and existing CLI behavior, and include a focused Pilot test for behavior
+changes. See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting a pull request.
+
 ## Basic usage
 
 All commands still accept explicit competition and task arguments:
