@@ -224,8 +224,9 @@ async def dashboard(request: web.Request) -> web.Response:
         return _login_page(
             "Your dashboard session expired. Sign in again." if session_id else ""
         )
+    new_session_id = ""
     if not session:
-        session_id, session = _new_session(app)
+        new_session_id, session = _new_session(app)
     html = resources.files(__package__).joinpath("assets/index.html").read_text()
     response = web.Response(
         text=(
@@ -235,15 +236,16 @@ async def dashboard(request: web.Request) -> web.Response:
         content_type="text/html",
         headers={"Cache-Control": "no-store"},
     )
-    response.set_cookie(
-        SESSION_COOKIE,
-        session_id,
-        httponly=True,
-        secure=app["public_origin"].startswith("https://"),
-        samesite="Strict",
-        path=f"{BASE_PATH}/",
-        max_age=SESSION_SECONDS,
-    )
+    if new_session_id:
+        response.set_cookie(
+            SESSION_COOKIE,
+            new_session_id,
+            httponly=True,
+            secure=app["public_origin"].startswith("https://"),
+            samesite="Strict",
+            path=f"{BASE_PATH}/",
+            max_age=SESSION_SECONDS,
+        )
     return response
 
 
@@ -814,7 +816,7 @@ async def operation_cancel(request: web.Request) -> web.Response:
         return web.json_response(value)
     task = request.app["operation_tasks"].get(operation_id)
     if task:
-        if not task.done() and not task.cancelling():
+        if not task.done():
             task.cancel()
         await asyncio.gather(asyncio.shield(task), return_exceptions=True)
         if request.app["operation_tasks"].get(operation_id) is task:
@@ -1245,6 +1247,7 @@ async def on_cleanup(app: web.Application) -> None:
     await asyncio.gather(*app["docker_debounce_tasks"].values(), return_exceptions=True)
     await asyncio.gather(*app["operation_tasks"].values(), return_exceptions=True)
     await app["http"].close()
+    app["store"].close()
 
 
 def create_app(

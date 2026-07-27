@@ -180,6 +180,8 @@ class ManagerBackendModelTests(unittest.TestCase):
             first.event("operation", "applying", "Started")
             second = ManagerStore(path)
             value = second.operation("operation")
+            first.close()
+            second.close()
         self.assertEqual(value["status"], "interrupted")
         self.assertEqual(value["error"]["stage"], "interrupted")
 
@@ -1015,6 +1017,8 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         page = await self.client.get("/nitro/", headers=self.host)
         html = await page.text()
         csrf = re.search(r'name="csrf-token" content="([^"]+)"', html).group(1)
+        same_session = await self.client.get("/nitro/", headers=self.host)
+        self.assertNotIn("Set-Cookie", same_session.headers)
         missing_csrf = await self.client.put(
             "/nitro/api/v1/credentials",
             headers={**self.host, "Origin": "http://localhost:51123"},

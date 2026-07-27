@@ -185,6 +185,7 @@ class ShellContextTests(unittest.TestCase):
         self.assertEqual(state.selected_submission(), "submission-ABC123")
 
 
+@unittest.skipIf(shell.readline is None, "readline is unavailable")
 class ReadlineTests(unittest.TestCase):
     def test_readline_wires_bindings_and_whole_token_completion(self) -> None:
         completer_set = Mock()
@@ -193,7 +194,9 @@ class ReadlineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             history = str(Path(directory) / "history")
             Path(history).write_text("", encoding="utf-8")
-            with patch.object(shell, "prepare_history", return_value=history), patch.object(
+            with patch.object(shell.readline, "__doc__", "GNU readline"), patch.object(
+                shell, "prepare_history", return_value=history
+            ), patch.object(
                 shell.readline, "read_history_file"
             ), patch.object(
                 shell.readline, "set_completer_delims"

@@ -55,7 +55,7 @@ def _warn_once(key: str, message: str) -> None:
 
 
 def _default_roots() -> tuple[str, str]:
-    home = os.path.expanduser("~")
+    home = os.environ.get("HOME") or os.path.expanduser("~")
     return os.path.join(home, ".naij"), os.path.join(home, ".nitro-cli")
 
 
@@ -78,7 +78,7 @@ def resolve_state_paths() -> StatePaths:
     canonical_env = clean_env_value("NAIJ_STATE_DIR")
     legacy_env = clean_env_value("NITRO_STATE_DIR")
     canonical, legacy = _default_roots()
-    key = (_cli_state_dir, canonical_env, legacy_env, os.path.expanduser("~"))
+    key = (_cli_state_dir, canonical_env, legacy_env, canonical)
     if key == _cached_key and _cached_paths is not None:
         return _cached_paths
 
@@ -159,7 +159,10 @@ def atomic_write(path: str, data: bytes, mode: int = 0o600) -> None:
     try:
         descriptor, temporary = tempfile.mkstemp(prefix=".naij-", dir=parent)
         with os.fdopen(descriptor, "wb") as stream:
-            os.fchmod(stream.fileno(), mode)
+            if hasattr(os, "fchmod"):
+                os.fchmod(stream.fileno(), mode)
+            else:
+                os.chmod(temporary, mode)
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())

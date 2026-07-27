@@ -84,6 +84,10 @@ class ManagerStore:
                 (interrupted["message"], json.dumps(interrupted), time.time()),
             )
 
+    def close(self) -> None:
+        with self.lock:
+            self.connection.close()
+
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self.lock:
