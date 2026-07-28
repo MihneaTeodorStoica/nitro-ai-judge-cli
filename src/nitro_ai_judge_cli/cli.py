@@ -304,9 +304,15 @@ def build_parser() -> argparse.ArgumentParser:
     download = sub.add_parser("download-data", help="Download task data files")
     download.add_argument("targets", nargs="*", help="[competition] [task]")
     download.add_argument("-c", "--category", action="append", choices=sorted(TASK_FILE_CATEGORIES))
-    download.add_argument("-d", "--out-dir", default=".")
+    download.add_argument("-d", "--out-dir")
     download.add_argument("-o", "--output", help="Output path for one category")
     download.add_argument("-f", "--force", action="store_true", help="Overwrite files")
+    download.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_only",
+        help="List available task data without downloading",
+    )
 
     add_play_parser(sub)
 
@@ -404,9 +410,10 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
             result = cmd_download_data(
                 cookies, bearer, org, comp, task_id,
                 categories=args.category,
-                output_dir=args.out_dir,
+                output_dir=args.out_dir or ".",
                 output_path=args.output,
                 force=args.force,
+                list_only=args.list_only,
             )
         elif args.cmd == "submit":
             result = cmd_submit(
@@ -555,6 +562,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "use":
         return _cmd_use(args)
+    if args.cmd == "download-data" and args.list_only:
+        conflicts = [
+            flag
+            for enabled, flag in (
+                (args.category, "--category"),
+                (args.out_dir is not None, "--out-dir"),
+                (args.output is not None, "--output"),
+                (args.force, "--force"),
+            )
+            if enabled
+        ]
+        if conflicts:
+            print(f"Error: --list cannot be used with {', '.join(conflicts)}")
+            return 1
     if not args.cmd:
         return run_shell(lambda words: main(words))
     if args.cmd == "login":

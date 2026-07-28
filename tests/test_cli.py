@@ -279,6 +279,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(download.out_dir, "data")
         self.assertEqual(download.output, "statement.pdf")
         self.assertTrue(download.force)
+        self.assertFalse(download.list_only)
         self.assertEqual(submissions.author, "user")
         self.assertEqual(submissions.page, 3)
         self.assertEqual(submissions.page_size, 50)
@@ -287,6 +288,11 @@ class ParserTests(unittest.TestCase):
     def test_global_state_directory_flag_is_parsed(self) -> None:
         args = cli.build_parser().parse_args(["--state-dir", "/tmp/naij", "use"])
         self.assertEqual(args.state_dir, "/tmp/naij")
+
+    def test_download_list_flag_is_parsed(self) -> None:
+        args = cli.build_parser().parse_args(["download-data", "--list"])
+        self.assertTrue(args.list_only)
+        self.assertIsNone(args.out_dir)
 
     def test_task_target_resolution_prefers_explicit_values_without_mutation(self) -> None:
         context = {
@@ -394,6 +400,50 @@ class ContextDispatchTests(unittest.TestCase):
         command.assert_called_once_with(
             ("", ""), "token", "ceoai", "ceoai-2026-day-1", "6", display_id="3"
         )
+
+    def test_download_list_uses_saved_and_explicit_task_targets(self) -> None:
+        state.set_contest(
+            {"organizationSlug": "saved", "competitionSlug": "contest"}
+        )
+        state.set_task({"id": "saved-task"})
+        auth = ({}, ("", ""), "token")
+        with patch.object(cli, "require_auth", return_value=auth), patch.object(
+            cli, "cmd_download_data", return_value=0
+        ) as command:
+            self.assertEqual(cli.main(["download-data", "--list"]), 0)
+        self.assertEqual(
+            command.call_args.args[:5],
+            (("", ""), "token", "saved", "contest", "saved-task"),
+        )
+        self.assertTrue(command.call_args.kwargs["list_only"])
+
+        tasks = [{"id": "backend-task", "title": "Task"}]
+        with patch.object(cli, "require_auth", return_value=auth), patch.object(
+            cli, "load_tasks", return_value=tasks
+        ), patch.object(cli, "cmd_download_data", return_value=0) as command:
+            self.assertEqual(
+                cli.main(["download-data", "org/contest", "1", "--list"]), 0
+            )
+        self.assertEqual(
+            command.call_args.args[:5],
+            (("", ""), "token", "org", "contest", "backend-task"),
+        )
+
+    def test_download_list_rejects_destination_flags_before_authentication(self) -> None:
+        for flag in ("--category", "--out-dir", "--output", "--force"):
+            with self.subTest(flag=flag), patch.object(
+                cli, "require_auth", side_effect=AssertionError("auth")
+            ):
+                argv = ["download-data", "--list", flag]
+                if flag == "--category":
+                    argv.append("statement")
+                elif flag == "--out-dir":
+                    argv.append(".")
+                elif flag == "--output":
+                    argv.append("file")
+                result = invoke(cli.main, argv)
+            self.assertEqual(result[0], 1)
+            self.assertIn(flag, result[1])
 
     def test_failed_use_does_not_change_existing_selection(self) -> None:
         state.set_contest({"organizationSlug": "old", "competitionSlug": "contest"})

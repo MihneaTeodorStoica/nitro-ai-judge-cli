@@ -432,6 +432,46 @@ class TaskFileTests(unittest.TestCase):
 
 
 class CommandExitTests(unittest.TestCase):
+    def test_download_list_discovers_categories_without_writing(self) -> None:
+        output = io.StringIO()
+        with (
+            patch.object(
+                contests,
+                "load_task_file_categories",
+                return_value=["statement", "future_category"],
+            ) as discover,
+            patch.object(
+                contests,
+                "download_task_data",
+                side_effect=AssertionError("download"),
+            ),
+            patch.object(
+                contests,
+                "write_task_file",
+                side_effect=AssertionError("write"),
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            result = contests.cmd_download_data(
+                COOKIES,
+                BEARER,
+                "org",
+                "contest",
+                "7",
+                categories=None,
+                output_dir=".",
+                output_path=None,
+                force=False,
+                list_only=True,
+            )
+
+        self.assertEqual(result, 0)
+        discover.assert_called_once_with(COOKIES, BEARER, "org", "contest", "7")
+        self.assertEqual(
+            output.getvalue().splitlines(),
+            ["statement\tStatement", "future_category\tFuture category"],
+        )
+
     def test_contest_and_task_commands_cache_successful_lists(self) -> None:
         competition = {"organizationSlug": "org", "competitionSlug": "contest", "title": "Contest"}
         task = {"id": "7", "title": "Task"}

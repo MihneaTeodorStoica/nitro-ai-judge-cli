@@ -508,6 +508,7 @@ class CompletionTests(unittest.TestCase):
         )
         self.assertIn("-c", remaining)
         self.assertIn("--category", remaining)
+        self.assertIn("--list", remaining)
 
         values = completion.candidates(
             ["submissions", "TaskOne", "-m", "both", ""], context
