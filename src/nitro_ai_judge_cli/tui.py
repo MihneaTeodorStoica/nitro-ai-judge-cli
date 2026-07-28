@@ -174,6 +174,13 @@ def submission_details(submission: dict[str, Any]) -> str:
             if subtask.get("metricName"):
                 line += f" · {subtask['metricName']}"
             lines.append(line)
+    lines.extend(
+        (
+            "",
+            "Tab/Shift-Tab: toggle the list and detail scroller",
+            "j/k or Up/Down: scroll the detail",
+        )
+    )
     return "\n".join(str(line) for line in lines)
 
 
@@ -1109,6 +1116,7 @@ class NitroTUI(App[int]):
         self.current_contest: dict[str, Any] | None = None
         self.current_task: dict[str, Any] | None = None
         self.current_submission: dict[str, Any] | None = None
+        self.submission_focus = "list"
         self.active_pane = "contests"
         self.active_view = 1
         self.layout_mode = "wide"
@@ -1312,6 +1320,7 @@ class NitroTUI(App[int]):
         self.current_submission = None
         self.submissions = []
         self.visible_submissions = []
+        self.submission_focus = "list"
         self.query_one("#submission-detail", Static).update("Select a submission.")
 
     def _clear_task_context(self) -> None:
@@ -2129,6 +2138,9 @@ class NitroTUI(App[int]):
         if isinstance(self.screen, ModalScreen):
             self.screen.focus_next()
             return
+        if self.active_pane == "right" and self.active_view == 3:
+            self._toggle_submission_focus()
+            return
         panes = ("contests", "tasks", "right")
         self.active_pane = panes[(panes.index(self.active_pane) + 1) % len(panes)]
         if (
@@ -2144,11 +2156,34 @@ class NitroTUI(App[int]):
         if isinstance(self.screen, ModalScreen):
             self.screen.focus_previous()
             return
+        if self.active_pane == "right" and self.active_view == 3:
+            self._toggle_submission_focus()
+            return
         panes = ("contests", "tasks", "right")
         self.active_pane = panes[(panes.index(self.active_pane) - 1) % len(panes)]
+        if (
+            self.active_pane == "right"
+            and self.active_view == 1
+            and self.current_task
+        ):
+            self._render_task_overview(self.current_task)
         self._apply_layout(self.size.width, self.size.height)
         self._focus_active()
 
+
+    def _focus_submission_list(self) -> None:
+        self.submission_focus = "list"
+        self.query_one("#submission-list", ListView).focus()
+
+    def _focus_submission_detail(self) -> None:
+        self.submission_focus = "detail"
+        self.query_one("#submission-detail-scroll", VerticalScroll).focus()
+
+    def _toggle_submission_focus(self) -> None:
+        if self.submission_focus == "detail":
+            self._focus_submission_list()
+        else:
+            self._focus_submission_detail()
     def _focus_active(self) -> None:
         if self.layout_mode == "too-small":
             return
@@ -2157,7 +2192,10 @@ class NitroTUI(App[int]):
         elif self.active_pane == "tasks":
             self.query_one("#task-list", ListView).focus()
         elif self.active_view == 3:
-            self.query_one("#submission-list", ListView).focus()
+            if self.submission_focus == "detail" and self.current_submission is not None:
+                self._focus_submission_detail()
+            else:
+                self._focus_submission_list()
         else:
             self.query_one(
                 f"#view-{('overview', 'data', 'submissions', 'play')[self.active_view - 1]}"

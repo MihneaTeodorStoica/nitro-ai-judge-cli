@@ -877,6 +877,77 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(authors, ["tester", "tester"])
 
+    async def test_submission_detail_scrolls_by_keyboard(self) -> None:
+        self.cache_selection()
+        submission = {
+            "id": "detail-submission",
+            "username": "tester",
+            "state": "finished",
+            "verdictMessage": "Accepted",
+            "subtasks": [
+                {"maximumScore": 1, "metricName": f"Metric {index}"}
+                for index in range(50)
+            ],
+        }
+        detailed = {
+            **submission,
+            "partialSubtaskScores": [1 for _ in range(50)],
+        }
+
+        def load_for_user(
+            _cookies: tuple[str, str],
+            _bearer: str,
+            _org: str,
+            _comp: str,
+            _task_id: str,
+            *,
+            author: str | None,
+            page: int | None,
+            page_size: int,
+            mode: str,
+        ) -> tuple[list[dict], int]:
+            return ([submission], 1) if mode == "partial" else ([], 1)
+
+        with (
+            self.auth_patches(contests=[CONTEST], tasks=TASKS),
+            patch.object(tui, "load_submissions", side_effect=load_for_user),
+            patch.object(tui, "load_submission", return_value=detailed),
+        ):
+            app = tui.NitroTUI()
+            async with app.run_test(size=(110, 32)) as pilot:
+                await pilot.pause(0.2)
+                await pilot.press("3")
+                await pilot.pause(0.2)
+                await pilot.press("enter")
+                await pilot.pause(0.2)
+                self.assertEqual(app.current_submission["id"], "detail-submission")
+                self.assertEqual(app.focused.id, "submission-list")
+
+                await pilot.press("tab")
+                await pilot.pause(0.1)
+                self.assertEqual(app.focused.id, "submission-detail-scroll")
+
+                detail = app.query_one("#submission-detail-scroll")
+                await pilot.press("down")
+                await pilot.pause(0.05)
+                self.assertGreater(detail.scroll_y, 0)
+
+                await pilot.press(*(["j"] * 80))
+                await pilot.pause(0.1)
+                self.assertEqual(detail.scroll_y, detail.max_scroll_y)
+
+                await pilot.press("up")
+                await pilot.pause(0.05)
+                self.assertLess(detail.scroll_y, detail.max_scroll_y)
+
+                await pilot.press(*(["k"] * 80))
+                await pilot.pause(0.1)
+                self.assertEqual(detail.scroll_y, 0)
+
+                await pilot.press("shift+tab")
+                await pilot.pause(0.1)
+                self.assertEqual(app.focused.id, "submission-list")
+
     async def test_every_play_action_and_down_confirmation_use_keys(self) -> None:
         state.update_cache("contests", "all", [CONTEST])
         state.set_contest(CONTEST)

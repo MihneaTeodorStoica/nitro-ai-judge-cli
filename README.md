@@ -95,7 +95,8 @@ The complete keymap is:
 - Enter: open
 - `h`/`l` or Left/Right: move across browser panes and task views
 - Esc: back
-- Tab/Shift-Tab: cycle panes, or move between form fields
+- Tab/Shift-Tab: cycle panes, move between form fields, and in Submissions toggle
+  between the submission list and the detail scroller
 - `/`: filter the active contest, task, or submission list
 - `r`: refresh the active view
 - `?`: contextual help
