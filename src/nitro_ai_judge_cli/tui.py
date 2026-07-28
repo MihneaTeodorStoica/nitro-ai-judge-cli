@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import os
+import threading
 from typing import Any, Callable
 import webbrowser
 
@@ -239,6 +240,40 @@ def _load_submission_with_auth(
     **kwargs: Any,
 ) -> dict[str, Any]:
     return load_submission(submission_id, cookies, bearer, **kwargs)
+
+
+async def _wait_for_play_operation(
+    client: ManagerClient, operation_id: str, *, timeout: float
+) -> dict[str, Any]:
+    stop_event = threading.Event()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+
+    def wait() -> None:
+        try:
+            result = client.wait_operation(
+                operation_id,
+                timeout=timeout,
+                stop_event=stop_event,
+            )
+        except BaseException as exc:
+            callback = lambda exc=exc: (
+                not future.done() and future.set_exception(exc)
+            )
+        else:
+            callback = lambda result=result: (
+                not future.done() and future.set_result(result)
+            )
+        try:
+            loop.call_soon_threadsafe(callback)
+        except RuntimeError:
+            pass
+
+    threading.Thread(target=wait, daemon=True).start()
+    try:
+        return await future
+    finally:
+        stop_event.set()
 
 
 class LoginRequired(RuntimeError):
@@ -2435,8 +2470,8 @@ class NitroTUI(App[int]):
                     pull="missing" if action in {"play", "recreate"} else None,
                     wait_timeout=120 if action in {"play", "recreate"} else None,
                 )
-                await asyncio.to_thread(
-                    client.wait_operation,
+                await _wait_for_play_operation(
+                    client,
                     str(accepted["operation_id"]),
                     timeout=600,
                 )

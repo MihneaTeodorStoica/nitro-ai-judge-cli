@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from typing import Any, Callable, Iterator
 import urllib.error
@@ -163,10 +164,13 @@ class ManagerClient:
         timeout: float = 600,
         interval: float = 0.5,
         progress: Callable[[dict[str, Any]], None] | None = None,
+        stop_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         last_sequence = -1
         while time.monotonic() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                raise InterruptedError("Stopped waiting for Play operation")
             operation = self.operation(operation_id)
             events = operation.get("events", [])
             for event in events if isinstance(events, list) else []:
@@ -186,7 +190,11 @@ class ManagerClient:
                     tuple(str(item) for item in error.get("logs", [])[-40:]),
                     500,
                 )
-            time.sleep(interval)
+            if stop_event is not None:
+                if stop_event.wait(interval):
+                    raise InterruptedError("Stopped waiting for Play operation")
+            else:
+                time.sleep(interval)
         raise ManagerConnectionError(
             f"Play operation did not finish within {int(timeout)} seconds"
         )

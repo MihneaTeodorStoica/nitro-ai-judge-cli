@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -76,7 +77,9 @@ class FakeManager:
         self.actions.append(action)
         return {"operation_id": f"operation-{action}"}
 
-    def wait_operation(self, operation_id: str, *, timeout: float = 600) -> dict:
+    def wait_operation(
+        self, operation_id: str, *, timeout: float = 600, **_options: object
+    ) -> dict:
         return {"status": "complete", "result": dict(PLAY_STATUS)}
 
     def open_info(self, org: str, competition: str) -> dict:
@@ -133,6 +136,37 @@ class TUIEntrypointTests(unittest.TestCase):
             self.assertEqual(tui.run_tui(), 1)
         app.assert_not_called()
         self.assertIn("Play manager migration failed: boom", output.getvalue())
+
+    def test_cancelled_play_wait_does_not_hold_asyncio_shutdown(self) -> None:
+        class WaitingManager:
+            def __init__(self) -> None:
+                self.started = threading.Event()
+
+            def wait_operation(
+                self,
+                _operation_id: str,
+                *,
+                timeout: float,
+                stop_event: threading.Event,
+            ) -> dict:
+                self.started.set()
+                time.sleep(2)
+                return {"status": "complete"}
+
+        manager = WaitingManager()
+
+        async def cancel_wait() -> None:
+            task = asyncio.create_task(
+                tui._wait_for_play_operation(manager, "operation", timeout=5)  # type: ignore[arg-type]
+            )
+            self.assertTrue(await asyncio.to_thread(manager.started.wait, 1))
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        started = time.monotonic()
+        asyncio.run(cancel_wait())
+        self.assertLess(time.monotonic() - started, 1)
 
 
 class TUIAuthSessionTests(unittest.IsolatedAsyncioTestCase):
