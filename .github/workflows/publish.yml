@@ -2,7 +2,7 @@ name: Build and Publish
 
 on:
   push:
-    branches: [main, feat/play-manager]
+    branches: [main]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -85,6 +85,37 @@ jobs:
           docker run --rm --entrypoint docker naij-play-manager:ci compose version
           docker run --rm --entrypoint python naij-play-manager:ci -c "import aiohttp, nitro_ai_judge_cli.manager"
 
+  manager-arm64:
+    name: Manager ARM64 release-candidate smoke (QEMU)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build ARM64 candidate from release inputs
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: manager/Dockerfile
+          platforms: linux/arm64
+          load: true
+          tags: naij-play-manager:arm64-ci
+      - name: Smoke Docker, Compose, Python, entrypoint, and health under QEMU
+        shell: bash
+        run: |
+          docker run --rm --platform linux/arm64 --entrypoint docker naij-play-manager:arm64-ci version
+          docker run --rm --platform linux/arm64 --entrypoint docker naij-play-manager:arm64-ci compose version
+          docker run --rm --platform linux/arm64 --entrypoint python naij-play-manager:arm64-ci -c "import aiohttp, nitro_ai_judge_cli.manager"
+          docker run -d --platform linux/arm64 --name naij-manager-arm64 -p 51123:51123 naij-play-manager:arm64-ci
+          trap 'docker logs naij-manager-arm64; docker rm -f naij-manager-arm64' EXIT
+          for attempt in {1..30}; do
+            curl --fail --silent http://127.0.0.1:51123/nitro/api/v1/health && exit 0
+            sleep 1
+          done
+          exit 1
+
   docker-integration:
     runs-on: ubuntu-latest
     needs: manager-build
@@ -104,14 +135,16 @@ jobs:
         run: python -m unittest discover -s tests/integration -v
 
   edge:
-    if: github.ref == 'refs/heads/feat/play-manager'
-    needs: [host-test, build, manager-build, docker-integration]
+    if: github.ref == 'refs/heads/main'
+    needs: [host-test, build, manager-build, manager-arm64, docker-integration]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - name: Verify the configured edge source branch exists
+        run: git ls-remote --exit-code --heads origin refs/heads/main
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -129,7 +162,7 @@ jobs:
 
   manager-publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [host-test, build, manager-build, docker-integration]
+    needs: [host-test, build, manager-build, manager-arm64, docker-integration]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -189,3 +222,21 @@ jobs:
           name: python-package-distributions
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the GitHub Release after all artifacts publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          NOTES="docs/release-notes-${GITHUB_REF_NAME#v}.md"
+          test -f "${NOTES}"
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
+            gh release create "${GITHUB_REF_NAME}" --title "Nitro AI Judge CLI ${GITHUB_REF_NAME#v}" --notes-file "${NOTES}" --latest

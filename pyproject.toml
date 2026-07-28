@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "nitro-ai-judge-cli"
 version = "3.0.4"
 description = "CLI client for judge.nitro-ai.org"
 readme = "README.md"
+license = "MIT AND OFL-1.1"
+license-files = ["LICENSE", "LICENSES/*.txt", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.10"
 dependencies = ["textual>=8.2,<9"]
 authors = [
