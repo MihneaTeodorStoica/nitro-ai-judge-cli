@@ -544,7 +544,10 @@ def cmd_login(username: str | None, password: str | None) -> int:
         print(f"Login OK | user={state.get('username')} | role={state.get('role')}")
         return 0
 
-    print(f"Login failed: {result.get('error')}")
+    error = str(result.get("error"))
+    if password:
+        error = error.replace(password, "[redacted]")
+    print(f"Login failed: {error}")
     return 1
 
 

@@ -63,9 +63,15 @@ python3 -m pip install -e .
 ```bash
 naij login
 naij login --username MihneaStoica
+secret-tool lookup service naij | naij login --username USER --password-stdin
+naij logout
+naij --version
 ```
 
 Login posts to Nitro's `/api/auth/login` endpoint and stores the returned access and refresh tokens. Nitro AI Judge refreshes an expired access token when possible and asks you to log in again when the saved refresh token is no longer valid.
+`--password-stdin` accepts one password line from a pipe and refuses an interactive
+terminal. `naij logout` removes only CLI credentials; Play manager credentials,
+context, cache, history, and workspaces remain unchanged.
 
 ## Full-screen TUI
 

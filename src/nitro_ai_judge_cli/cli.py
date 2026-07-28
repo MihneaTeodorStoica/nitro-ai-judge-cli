@@ -6,6 +6,7 @@ import argparse
 import sys
 from typing import Any
 
+from . import __version__
 from .api import cmd_login, configure_runtime, get_auth, require_auth
 from .completion import candidates as completion_candidates, script as completion_script
 from .config import (
@@ -33,6 +34,7 @@ from .play import (
 from .shell import run_shell
 from .state import (
     CredentialsError,
+    clear_credentials,
     clear_context,
     configure_state_dir,
     load_context,
@@ -258,6 +260,9 @@ def build_parser() -> argparse.ArgumentParser:
 """,
     )
     parser.add_argument(
+        "-V", "--version", action="version", version=f"%(prog)s {__version__}"
+    )
+    parser.add_argument(
         "--api-url",
         help="Backend API base URL (CLI, NAIJ_API_BASE_URL, NITRO_API_BASE_URL, PROXY_URL, then default)",
     )
@@ -274,6 +279,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     login = sub.add_parser("login", help="Login to Nitro Judge")
     login.add_argument("--username")
+    login.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="Read one password line from non-interactive stdin",
+    )
+
+    sub.add_parser("logout", help="Remove saved CLI credentials")
 
     sub.add_parser("tui", help="Open the full-screen contest cockpit")
 
@@ -538,7 +550,19 @@ def main(argv: list[str] | None = None) -> int:
     if not args.cmd:
         return run_shell(lambda words: main(words))
     if args.cmd == "login":
-        result = cmd_login(args.username, None)
+        password = None
+        if args.password_stdin:
+            if not args.username:
+                print("Error: --username is required with --password-stdin.", file=sys.stderr)
+                return 2
+            if sys.stdin.isatty():
+                print("Error: --password-stdin requires piped input.", file=sys.stderr)
+                return 2
+            password = sys.stdin.readline().rstrip("\r\n")
+            if not password:
+                print("Error: --password-stdin received an empty password.", file=sys.stderr)
+                return 2
+        result = cmd_login(args.username, password)
         if result == 0:
             from .play_manager_lifecycle import (
                 load_manager_config,
@@ -555,6 +579,18 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
         return result
+    if args.cmd == "logout":
+        try:
+            removed = clear_credentials()
+        except CredentialsError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        print("Logged out." if removed else "Already logged out.")
+        print(
+            "Play manager credentials were not changed; run `naij play manager open` "
+            "and choose Disconnect Nitro to remove them."
+        )
+        return 0
     if args.cmd == "tui":
         from .tui import run_tui
 
