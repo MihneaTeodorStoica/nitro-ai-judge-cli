@@ -34,6 +34,11 @@ from .ui import Spinner
 
 PLAY_WAIT_TIMEOUT = 120
 MANAGER_SETUP_LABEL = "Installing Play manager (pulling image and waiting for health)\u2026"
+MANAGER_ACTION_LABELS = {
+    "start": "Starting Play manager\u2026",
+    "stop": "Stopping Play manager\u2026",
+    "restart": "Restarting Play manager\u2026",
+}
 PLAY_ACTIONS = {
     "pull",
     "play",
@@ -448,7 +453,11 @@ def cmd_manager(args: argparse.Namespace) -> int:
         ):
             _install_or_repair_manager()
             return 0
-        manager_compose_action(action)
+        spinner = Spinner(MANAGER_ACTION_LABELS[action], stream=sys.stdout).start()
+        try:
+            manager_compose_action(action)
+        finally:
+            spinner.stop()
         print(f"Play manager {action} complete")
         return 0
     if action == "open":
