@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -568,6 +569,71 @@ class ManagerConfigurationTests(unittest.TestCase):
             "127.0.0.1", tls_cert=None, tls_key=None, public_url=None
         )
 
+    def test_tls_certificate_and_key_are_required_as_a_pair(self) -> None:
+        for cert, key in (("/cert.pem", None), (None, "/key.pem")):
+            with self.subTest(cert=cert, key=key), self.assertRaisesRegex(
+                ValueError, "supplied together"
+            ):
+                validate_manager_exposure(
+                    "127.0.0.1", tls_cert=cert, tls_key=key, public_url=None
+                )
+
+    def test_run_process_passes_timeout_and_renders_expiry(self) -> None:
+        with patch.object(
+            play_manager_lifecycle.subprocess,
+            "run",
+            side_effect=subprocess.TimeoutExpired(["docker", "info"], 7),
+        ) as run:
+            with self.assertRaisesRegex(RuntimeError, "timed out after 7 seconds"):
+                play_manager_lifecycle.run_process(["docker", "info"], timeout=7)
+        self.assertEqual(run.call_args.kwargs["timeout"], 7)
+
+    def test_occupied_compatible_port_requires_local_authenticated_state(self) -> None:
+        endpoint = DockerEndpoint(
+            "default", "unix:///run/docker.sock", "/run/docker.sock", "linux"
+        )
+        info = {
+            "identity": "naij-play-manager",
+            "api_version": 1,
+            "minimum_cli_version": "0.0.0",
+        }
+        with (
+            patch.object(
+                play_manager_lifecycle, "resolve_docker_endpoint", return_value=endpoint
+            ),
+            patch.object(play_manager_lifecycle, "_port_in_use", return_value=True),
+            patch.object(ManagerClient, "info", return_value=info),
+            self.assertRaisesRegex(RuntimeError, "local configuration or API credential"),
+        ):
+            play_manager_lifecycle.install_manager()
+
+    def test_install_normalizes_localhost_before_compose_generation(self) -> None:
+        endpoint = DockerEndpoint(
+            "default", "unix:///run/docker.sock", "/run/docker.sock", "linux"
+        )
+        process = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with (
+            patch.object(
+                play_manager_lifecycle, "resolve_docker_endpoint", return_value=endpoint
+            ),
+            patch.object(play_manager_lifecycle, "_port_in_use", return_value=False),
+            patch.object(play_manager_lifecycle, "run_process", return_value=process),
+            patch.object(play_manager_lifecycle, "_verify_manager", return_value={}),
+            patch.object(play_manager_lifecycle, "sync_manager_credentials"),
+            patch(
+                "nitro_ai_judge_cli.play_legacy.discover_legacy_environments",
+                return_value=[],
+            ),
+        ):
+            play_manager_lifecycle.install_manager(bind="localhost")
+        config = play_manager_lifecycle.load_manager_config()
+        self.assertEqual(config["bind"], "127.0.0.1")
+        with open(play_manager_lifecycle.manager_paths()["compose"], encoding="utf-8") as stream:
+            compose = json.load(stream)
+        self.assertEqual(
+            compose["services"]["manager"]["ports"], ["127.0.0.1:51123:51123"]
+        )
+
     def test_update_restores_config_when_compose_write_fails(self) -> None:
         root = state.ensure_state_dir().play_manager
         os.makedirs(root)
@@ -658,6 +724,26 @@ class ManagerClientTests(unittest.TestCase):
                 )
         self.assertEqual(caught.exception.type, "competition_busy")
         self.assertEqual(caught.exception.status, 409)
+
+    def test_follow_logs_preserves_typed_http_error(self) -> None:
+        error = __import__("urllib.error", fromlist=["HTTPError"]).HTTPError(
+            "http://localhost", 401, "unauthorized", {}, io.BytesIO(
+                b'{"error":{"type":"authentication_required","message":"sign in again","stage":"validating","logs":["safe"]}}'
+            )
+        )
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(WireError) as caught:
+                list(ManagerClient("http://localhost", "token").follow_logs("org", "contest"))
+        self.assertEqual(caught.exception.status, 401)
+        self.assertEqual(caught.exception.type, "authentication_required")
+        self.assertEqual(caught.exception.stage, "validating")
+        self.assertEqual(caught.exception.logs, ("safe",))
+
+    def test_follow_logs_reports_network_disconnect_separately(self) -> None:
+        error = __import__("urllib.error", fromlist=["URLError"]).URLError("down")
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaisesRegex(Exception, "stream disconnected"):
+                list(ManagerClient("http://localhost", "token").follow_logs("org", "contest"))
 
 
 if __name__ == "__main__":

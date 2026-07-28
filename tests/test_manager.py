@@ -250,6 +250,96 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(context["workspace"], "legacy")
 
+    async def test_missing_adopted_volume_restarts_running_legacy_container(self) -> None:
+        inspected = json.dumps(
+            [{
+                "Config": {"Labels": {
+                    "com.docker.compose.project": "legacy-project",
+                    "com.docker.compose.service": "jupyter-server",
+                }},
+                "State": {"Running": True},
+            }]
+        )
+
+        async def run(command, **_options):
+            if command[:2] == ["docker", "inspect"]:
+                return 0, inspected, ""
+            return 0, "", ""
+
+        self.backend.run = AsyncMock(side_effect=run)
+        self.backend._volume_details = AsyncMock(return_value=None)
+        adoption = {
+            "verified": True,
+            "manifest": {
+                "container_id": "legacy",
+                "project": "legacy-project",
+                "workspace_kind": "volume",
+                "workspace_volume": "missing",
+            },
+        }
+        with self.assertRaisesRegex(WireError, "workspace volume is missing"):
+            await self.backend._prepare_legacy(
+                "org", "contest", adoption, AsyncMock()
+            )
+        commands = [call.args[0] for call in self.backend.run.await_args_list]
+        self.assertIn(["docker", "stop", "legacy"], commands)
+        self.assertIn(["docker", "start", "legacy"], commands)
+
+    async def test_copy_failure_removes_new_workspace_and_restarts_legacy(self) -> None:
+        inspected = json.dumps(
+            [{
+                "Config": {"Labels": {
+                    "com.docker.compose.project": "legacy-project",
+                    "com.docker.compose.service": "jupyter-server",
+                }},
+                "State": {"Running": True},
+            }]
+        )
+
+        async def run(command, **_options):
+            if command[:2] == ["docker", "inspect"]:
+                return 0, inspected, ""
+            if command[:2] == ["docker", "create"]:
+                raise RuntimeError("create failed")
+            return 0, "", ""
+
+        self.backend.run = AsyncMock(side_effect=run)
+        self.backend._create_volume = AsyncMock()
+        self.backend._remove_owned_volume = AsyncMock()
+        adoption = {
+            "verified": True,
+            "manifest": {"container_id": "legacy", "project": "legacy-project"},
+        }
+        with self.assertRaisesRegex(RuntimeError, "create failed"):
+            await self.backend._prepare_legacy(
+                "org", "contest", adoption, AsyncMock()
+            )
+        self.backend._remove_owned_volume.assert_awaited_once()
+        commands = [call.args[0] for call in self.backend.run.await_args_list]
+        self.assertIn(["docker", "start", "legacy"], commands)
+
+    async def test_cancellation_after_legacy_preparation_runs_rollback(self) -> None:
+        context = {
+            "workspace": "workspace",
+            "container": "legacy",
+            "was_running": True,
+            "created_workspace": False,
+            "created_secret": False,
+            "created_config": False,
+        }
+        self.backend._pull = AsyncMock(return_value=("notebook", "proxy"))
+        self.backend._prepare_legacy = AsyncMock(return_value=context)
+        self.backend._volume_details = AsyncMock(return_value=None)
+        self.backend._write_volume_file = AsyncMock(side_effect=asyncio.CancelledError)
+        self.backend._rollback_legacy = AsyncMock()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.backend.perform(
+                "org", "contest", "play", {"pull": "never"}, AsyncMock()
+            )
+        self.backend._rollback_legacy.assert_awaited_once_with(
+            "org", "contest", context
+        )
+
     async def test_ready_is_workspace_only_and_stopped_requires_containers(self) -> None:
         images = {
             "notebook": {"name": "notebook", "state": "ready"},

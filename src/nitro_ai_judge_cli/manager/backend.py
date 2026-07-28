@@ -591,10 +591,14 @@ class DockerBackend:
             "container": "",
             "was_running": False,
             "copied_workspace": False,
+            "created_workspace": False,
+            "created_secret": False,
+            "created_config": False,
             "project": "",
         }
         if not adoption or not adoption.get("verified"):
             await self._create_volume(names["workspace"], workspace_labels)
+            context["created_workspace"] = True
             return context
         manifest = adoption.get("manifest") or {}
         container = str(manifest.get("container_id") or "")
@@ -612,6 +616,7 @@ class DockerBackend:
             )
             if workspace == names["workspace"]:
                 await self._create_volume(workspace, workspace_labels)
+                context["created_workspace"] = True
             elif workspace != self._adopted_workspace(adoption):
                 raise WireError(
                     ErrorType.OWNERSHIP_MISMATCH.value,
@@ -656,53 +661,60 @@ class DockerBackend:
                 "project": expected_project,
             }
         )
-        await progress("preparing", "Stopping verified legacy environment for lazy cutover")
-        if context["was_running"]:
-            await self.run(["docker", "stop", container], timeout=90)
-        legacy_volume = self._adopted_workspace(adoption)
-        if legacy_volume:
-            if not await self._volume_details(legacy_volume):
-                raise WireError(
-                    ErrorType.NOT_FOUND.value,
-                    f"Verified legacy workspace volume is missing: {legacy_volume}",
-                    stage="preparing",
-                    status=409,
-                )
-            context["workspace"] = legacy_volume
-            return context
-        await progress("preparing", "Copying container-layer workspace into a private volume")
-        await self._create_volume(names["workspace"], workspace_labels)
-        temporary = f"{names['project']}-workspace-migration"
         try:
-            await self.run(
-                [
-                    "docker",
-                    "create",
-                    "--name",
-                    temporary,
-                    "-v",
-                    f"{names['workspace']}:/home/jovyan",
-                    "--entrypoint",
-                    "/bin/true",
-                    self.manager_image,
-                ],
-                timeout=60,
-            )
-            await self.run(["docker", "start", "--attach", temporary], timeout=60)
-            await self.run(
-                [
-                    "docker",
-                    "cp",
-                    "--archive",
-                    f"{container}:/home/jovyan/.",
-                    f"{temporary}:/home/jovyan",
-                ],
-                timeout=600,
-            )
-        finally:
-            await self.run(["docker", "rm", "-f", temporary], check=False, timeout=60)
-        context["copied_workspace"] = True
-        return context
+            await progress("preparing", "Stopping verified legacy environment for lazy cutover")
+            if context["was_running"]:
+                await self.run(["docker", "stop", container], timeout=90)
+            legacy_volume = self._adopted_workspace(adoption)
+            if legacy_volume:
+                if not await self._volume_details(legacy_volume):
+                    raise WireError(
+                        ErrorType.NOT_FOUND.value,
+                        f"Verified legacy workspace volume is missing: {legacy_volume}",
+                        stage="preparing",
+                        status=409,
+                    )
+                context["workspace"] = legacy_volume
+                return context
+            await progress("preparing", "Copying container-layer workspace into a private volume")
+            await self._create_volume(names["workspace"], workspace_labels)
+            context["created_workspace"] = True
+            temporary = f"{names['project']}-workspace-migration"
+            try:
+                await self.run(
+                    [
+                        "docker",
+                        "create",
+                        "--name",
+                        temporary,
+                        "-v",
+                        f"{names['workspace']}:/home/jovyan",
+                        "--entrypoint",
+                        "/bin/true",
+                        self.manager_image,
+                    ],
+                    timeout=60,
+                )
+                await self.run(["docker", "start", "--attach", temporary], timeout=60)
+                await self.run(
+                    [
+                        "docker",
+                        "cp",
+                        "--archive",
+                        f"{container}:/home/jovyan/.",
+                        f"{temporary}:/home/jovyan",
+                    ],
+                    timeout=600,
+                )
+            finally:
+                await asyncio.shield(
+                    self.run(["docker", "rm", "-f", temporary], check=False, timeout=60)
+                )
+            context["copied_workspace"] = True
+            return context
+        except BaseException:
+            await asyncio.shield(self._rollback_legacy(org, competition, context))
+            raise
 
     async def _finish_legacy(self, context: dict[str, Any]) -> None:
         container = str(context.get("container") or "")
@@ -725,24 +737,25 @@ class DockerBackend:
     async def _rollback_legacy(
         self, org: str, competition: str, context: dict[str, Any]
     ) -> None:
-        if not context.get("container"):
-            return
-        await self.run(
-            self.compose_command(org, competition, "down", "--remove-orphans"),
-            check=False,
-            timeout=180,
-        )
         names = self.names(org, competition)
         workspace = str(context["workspace"])
-        await self._remove_owned_volume(
-            names["secret"],
-            self.labels(org, competition, "secret", workspace=workspace),
-        )
-        await self._remove_owned_volume(
-            names["config"],
-            self.labels(org, competition, "jupyter-config", workspace=workspace),
-        )
-        if context.get("copied_workspace"):
+        if context.get("container"):
+            await self.run(
+                self.compose_command(org, competition, "down", "--remove-orphans"),
+                check=False,
+                timeout=180,
+            )
+        if context.get("created_secret"):
+            await self._remove_owned_volume(
+                names["secret"],
+                self.labels(org, competition, "secret", workspace=workspace),
+            )
+        if context.get("created_config"):
+            await self._remove_owned_volume(
+                names["config"],
+                self.labels(org, competition, "jupyter-config", workspace=workspace),
+            )
+        if context.get("created_workspace"):
             await self._remove_owned_volume(
                 names["workspace"],
                 self.labels(
@@ -752,7 +765,7 @@ class DockerBackend:
                     workspace=names["workspace"],
                 ),
             )
-        if context.get("was_running"):
+        if context.get("was_running") and context.get("container"):
             await self.run(
                 ["docker", "start", str(context["container"])], check=False, timeout=90
             )
@@ -1057,57 +1070,63 @@ class DockerBackend:
             legacy_context = await self._prepare_legacy(
                 org, competition, adoption, progress
             )
-            await self._write_volume_file(
-                names["secret"],
-                "session_whitelist_bypass_key",
-                (secrets.token_urlsafe(32) + "\n").encode(),
-                self.labels(
-                    org,
-                    competition,
-                    "secret",
-                    workspace=str(legacy_context["workspace"]),
-                ),
-            )
-            base_path = f"/nitro/competitions/{org}/{competition}/jupyter/"
-            jupyter_config = (
+            try:
+                legacy_context["created_secret"] = not bool(
+                    await self._volume_details(names["secret"])
+                )
+                await self._write_volume_file(
+                    names["secret"],
+                    "session_whitelist_bypass_key",
+                    (secrets.token_urlsafe(32) + "\n").encode(),
+                    self.labels(
+                        org,
+                        competition,
+                        "secret",
+                        workspace=str(legacy_context["workspace"]),
+                    ),
+                )
+                base_path = f"/nitro/competitions/{org}/{competition}/jupyter/"
+                jupyter_config = (
                 "c.ServerApp.base_url = " + repr(base_path) + "\n"
                 "c.ServerApp.allow_remote_access = True\n"
                 "c.ServerApp.trust_xheaders = True\n"
                 "c.ServerApp.allow_origin = ''\n"
                 "c.IdentityProvider.token = ''\n"
-            ).encode()
-            config_labels = self.labels(
-                org,
-                competition,
-                "jupyter-config",
-                workspace=str(legacy_context["workspace"]),
-            )
-            await self._write_volume_file(
-                names["config"],
-                "jupyter_server_config.py",
-                jupyter_config,
-                config_labels,
-                mode=0o644,
-            )
-            await self._write_volume_file(
-                names["config"], "migrated", b"", config_labels, mode=0o644
-            )
-            gpu_requested = (
+                ).encode()
+                config_labels = self.labels(
+                    org,
+                    competition,
+                    "jupyter-config",
+                    workspace=str(legacy_context["workspace"]),
+                )
+                legacy_context["created_config"] = not bool(
+                    await self._volume_details(names["config"])
+                )
+                await self._write_volume_file(
+                    names["config"],
+                    "jupyter_server_config.py",
+                    jupyter_config,
+                    config_labels,
+                    mode=0o644,
+                )
+                await self._write_volume_file(
+                    names["config"], "migrated", b"", config_labels, mode=0o644
+                )
+                gpu_requested = (
                 "required" if options.get("gpu") is True else "disabled" if options.get("gpu") is False else "auto"
-            )
-            assert resolved_images is not None
-            images = resolved_images
-            gpu = await self._gpu_enabled(images[0], gpu_requested)
-            compose = self._compose(
-                org,
-                competition,
-                gpu=gpu,
-                pull_policy="never",
-                workspace_name=str(legacy_context["workspace"]),
-                images=images,
-            )
-            self._atomic_compose(compose_path, compose)
-            try:
+                )
+                assert resolved_images is not None
+                images = resolved_images
+                gpu = await self._gpu_enabled(images[0], gpu_requested)
+                compose = self._compose(
+                    org,
+                    competition,
+                    gpu=gpu,
+                    pull_policy="never",
+                    workspace_name=str(legacy_context["workspace"]),
+                    images=images,
+                )
+                self._atomic_compose(compose_path, compose)
                 await progress("applying", "Starting competition services")
                 command = self.compose_command(org, competition, "up", "-d", "--remove-orphans")
                 if action == "recreate":
@@ -1118,8 +1137,10 @@ class DockerBackend:
                     org, competition, int(options.get("wait_timeout") or 120), progress
                 )
                 await self._finish_legacy(legacy_context)
-            except Exception:
-                await self._rollback_legacy(org, competition, legacy_context)
+            except BaseException:
+                await asyncio.shield(
+                    self._rollback_legacy(org, competition, legacy_context)
+                )
                 raise
             snapshot = await self.inspect_competition(org, competition)
             snapshot["workspace"] = legacy_context["workspace"]
