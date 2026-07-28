@@ -336,7 +336,7 @@ class LoginScreen(ModalScreen[dict[str, Any] | None]):
                 password=True,
                 id="login-password",
             )
-            yield Static("", id="login-error", classes="form-error")
+            yield Static("", id="login-error", classes="form-error", markup=False)
             yield Static(
                 "Tab next · Enter sign in · Esc cancel",
                 classes="dialog-hint",
@@ -408,7 +408,7 @@ class ConfirmScreen(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-dialog"):
             yield Label("Please confirm", classes="dialog-title")
-            yield Static(self.message)
+            yield Static(self.message, id="confirm-message", markup=False)
             yield OptionList("No — keep everything", "Yes — continue", id="confirm-list")
             yield Static("y yes · n/Esc no · Enter choose", classes="dialog-hint")
 
@@ -461,7 +461,7 @@ class DownloadScreen(ModalScreen[DownloadRequest | None]):
             yield Input(value=os.getcwd(), id="download-directory")
             yield Label("Single-file path (optional; one category only)")
             yield Input(placeholder="/path/to/file", id="download-output")
-            yield Static("", id="download-error", classes="form-error")
+            yield Static("", id="download-error", classes="form-error", markup=False)
             yield Static(
                 "Space toggle · Tab next · Enter on last field download · Esc cancel",
                 classes="dialog-hint",
@@ -531,7 +531,7 @@ class SubmitScreen(ModalScreen[SubmitRequest | None]):
             with Horizontal(classes="form-row"):
                 yield Label("Note (optional)")
                 yield Input(id="submit-note")
-            yield Static("", id="submit-error", classes="form-error")
+            yield Static("", id="submit-error", classes="form-error", markup=False)
             with Horizontal(classes="dialog-actions"):
                 yield Button("Cancel", id="submit-cancel")
                 yield Button("Submit", id="submit-confirm", variant="success")
@@ -1119,6 +1119,7 @@ class NitroTUI(App[int]):
                         yield Static(
                             "Select a task to inspect its data.",
                             id="data-content",
+                            markup=False,
                         )
                     with Vertical(id="view-submissions", classes="task-view"):
                         with Horizontal(id="submission-actions"):
@@ -1140,17 +1141,19 @@ class NitroTUI(App[int]):
                             yield Static(
                                 "Select a submission.",
                                 id="submission-detail",
+                                markup=False,
                             )
                     with VerticalScroll(id="view-play", classes="task-view"):
                         yield Static(
                             "Select a contest to inspect local play.",
                             id="play-content",
+                            markup=False,
                         )
             yield Static(
                 "Terminal too small\nResize to at least 60 × 20",
                 id="too-small",
             )
-        yield Static("Starting…", id="status-line")
+        yield Static("Starting…", id="status-line", markup=False)
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -1246,6 +1249,45 @@ class NitroTUI(App[int]):
             return ""
         org, comp = contest_ref(self.current_contest)
         return f"{org}/{comp}/{self.current_task.get('id')}"
+
+    def _contest_is_current(self, generation: int, org: str, comp: str) -> bool:
+        return (
+            generation == self.contest_generation
+            and self.current_contest is not None
+            and contest_ref(self.current_contest) == (org, comp)
+        )
+
+    def _task_is_current(
+        self,
+        contest_generation: int,
+        task_generation: int,
+        org: str,
+        comp: str,
+        task_id: str,
+    ) -> bool:
+        return (
+            self._contest_is_current(contest_generation, org, comp)
+            and task_generation == self.task_generation
+            and self.current_task is not None
+            and str(self.current_task.get("id")) == task_id
+        )
+
+    def _clear_submission_context(self) -> None:
+        self.submission_generation += 1
+        self.current_submission = None
+        self.submissions = []
+        self.visible_submissions = []
+        self.query_one("#submission-detail", Static).update("Select a submission.")
+
+    def _clear_task_context(self) -> None:
+        self.task_generation += 1
+        self.current_task = None
+        self.categories = []
+        self.query_one("#overview", Markdown).update("Select a task to begin.")
+        self.query_one("#data-content", Static).update(
+            "Select a task to inspect its data."
+        )
+        self._clear_submission_context()
 
     def set_status(self, message: str, kind: str = "") -> None:
         status = self.query_one("#status-line", Static)
@@ -1439,11 +1481,14 @@ class NitroTUI(App[int]):
         self.query_one("#overview", Markdown).update(text)
 
     def open_contest(self, contest: dict[str, Any]) -> None:
-        self.current_contest = contest
-        self.current_task = None
-        self.current_submission = None
-        self.active_pane = "tasks"
         self.contest_generation += 1
+        self._clear_task_context()
+        self.play_snapshot = {}
+        self.query_one("#play-content", Static).update(
+            "Select Play to load this contest's local state."
+        )
+        self.current_contest = contest
+        self.active_pane = "tasks"
         org, comp = contest_ref(contest)
         set_contest(contest)
         self.tasks = cached_items("tasks", f"{org}/{comp}")
@@ -1456,9 +1501,11 @@ class NitroTUI(App[int]):
         self.refresh_tasks()
 
     def open_task(self, task: dict[str, Any]) -> None:
-        self.current_task = task
-        self.current_submission = None
         self.task_generation += 1
+        self._clear_submission_context()
+        self.categories = []
+        self.query_one("#data-content", Static).update("Loading task data…")
+        self.current_task = task
         set_task(task)
         self.submissions = cached_items("submissions", self.task_cache_key)
         self.active_view = 1
@@ -1610,7 +1657,7 @@ class NitroTUI(App[int]):
         self.set_status("Loading tasks…")
         try:
             tasks = await self.session.call(load_tasks, org, comp)
-            if generation != self.contest_generation:
+            if not self._contest_is_current(generation, org, comp):
                 return
             statements = {
                 str(item.get("id")): item.get("statement")
@@ -1631,37 +1678,41 @@ class NitroTUI(App[int]):
             await self.render_tasks()
             self.set_status(f"{len(tasks)} tasks", "success")
         except Exception as exc:
-            self._network_error("Could not load tasks", exc)
+            if self._contest_is_current(generation, org, comp):
+                self._network_error("Could not load tasks", exc)
 
     @work(group="task", exclusive=True)
     async def refresh_task(self) -> None:
         if not self.current_contest or not self.current_task:
             return
-        generation = self.task_generation
+        contest_generation = self.contest_generation
+        task_generation = self.task_generation
         org, comp = contest_ref(self.current_contest)
         task_id = str(self.current_task.get("id"))
         try:
             payload = await self.session.call(
                 load_task_view, org, comp, task_id
             )
-            if generation != self.task_generation:
+            if not self._task_is_current(
+                contest_generation, task_generation, org, comp, task_id
+            ):
                 return
             task = payload["task"]
-            task_id = str(task.get("id"))
+            loaded_task_id = str(task.get("id"))
             existing = next(
                 (
                     item
                     for item in self.tasks
-                    if str(item.get("id")) == task_id
+                    if str(item.get("id")) == loaded_task_id
                 ),
                 {},
             )
             task = {**existing, **task}
             found = any(
-                str(item.get("id")) == task_id for item in self.tasks
+                str(item.get("id")) == loaded_task_id for item in self.tasks
             )
             self.tasks = [
-                task if str(item.get("id")) == task_id else item
+                task if str(item.get("id")) == loaded_task_id else item
                 for item in self.tasks
             ]
             if not found:
@@ -1673,20 +1724,26 @@ class NitroTUI(App[int]):
             self._update_header()
             self.set_status("Task loaded", "success")
         except Exception as exc:
-            self._network_error("Could not load task", exc)
+            if self._task_is_current(
+                contest_generation, task_generation, org, comp, task_id
+            ):
+                self._network_error("Could not load task", exc)
 
     @work(group="categories", exclusive=True)
     async def refresh_categories(self) -> None:
         if not self.current_contest or not self.current_task:
             return
-        generation = self.task_generation
+        contest_generation = self.contest_generation
+        task_generation = self.task_generation
         org, comp = contest_ref(self.current_contest)
         task_id = str(self.current_task.get("id"))
         try:
             categories = await self.session.call(
                 load_task_file_categories, org, comp, task_id
             )
-            if generation != self.task_generation:
+            if not self._task_is_current(
+                contest_generation, task_generation, org, comp, task_id
+            ):
                 return
             self.categories = categories
             lines = ["Available task data", ""]
@@ -1699,7 +1756,10 @@ class NitroTUI(App[int]):
             lines.extend(("", "Press d to choose files and a destination."))
             self.query_one("#data-content", Static).update("\n".join(lines))
         except Exception as exc:
-            self._network_error("Could not load task data", exc)
+            if self._task_is_current(
+                contest_generation, task_generation, org, comp, task_id
+            ):
+                self._network_error("Could not load task data", exc)
 
     @on(Input.Changed, "#submission-filter")
     def submission_filter_changed(self) -> None:
@@ -1777,7 +1837,8 @@ class NitroTUI(App[int]):
                 "error",
             )
             return
-        generation = self.task_generation
+        contest_generation = self.contest_generation
+        task_generation = self.task_generation
         org, comp = contest_ref(self.current_contest)
         task_id = str(self.current_task.get("id"))
         self.set_status("Loading submissions…")
@@ -1804,7 +1865,9 @@ class NitroTUI(App[int]):
                     mode="complete",
                 ),
             )
-            if generation != self.task_generation:
+            if not self._task_is_current(
+                contest_generation, task_generation, org, comp, task_id
+            ):
                 return
             self.submissions = [
                 *({**item, "_mode": "partial"} for item in partial[0]),
@@ -1814,7 +1877,10 @@ class NitroTUI(App[int]):
             await self.render_submissions()
             self.set_status(f"{len(self.submissions)} submissions", "success")
         except Exception as exc:
-            self._network_error("Could not load submissions", exc)
+            if self._task_is_current(
+                contest_generation, task_generation, org, comp, task_id
+            ):
+                self._network_error("Could not load submissions", exc)
 
     @work(group="submission-detail", exclusive=True)
     async def refresh_submission_details(self) -> None:
@@ -1824,7 +1890,9 @@ class NitroTUI(App[int]):
             or not self.current_submission
         ):
             return
-        generation = self.submission_generation
+        contest_generation = self.contest_generation
+        task_generation = self.task_generation
+        submission_generation = self.submission_generation
         org, comp = contest_ref(self.current_contest)
         task_id = str(self.current_task.get("id"))
         submission_id = str(self.current_submission.get("id"))
@@ -1836,7 +1904,14 @@ class NitroTUI(App[int]):
                 comp=comp,
                 task_id=task_id,
             )
-            if generation != self.submission_generation:
+            if (
+                not self._task_is_current(
+                    contest_generation, task_generation, org, comp, task_id
+                )
+                or submission_generation != self.submission_generation
+                or not self.current_submission
+                or str(self.current_submission.get("id")) != submission_id
+            ):
                 return
             self.current_submission = submission
             set_submission(submission)
@@ -1844,7 +1919,15 @@ class NitroTUI(App[int]):
                 submission_details(submission)
             )
         except Exception as exc:
-            self._network_error("Could not load submission", exc)
+            if (
+                self._task_is_current(
+                    contest_generation, task_generation, org, comp, task_id
+                )
+                and submission_generation == self.submission_generation
+                and self.current_submission
+                and str(self.current_submission.get("id")) == submission_id
+            ):
+                self._network_error("Could not load submission", exc)
 
     @work(group="play-status", exclusive=True)
     async def refresh_play_status(self) -> None:
@@ -1858,7 +1941,7 @@ class NitroTUI(App[int]):
                 asyncio.to_thread(client.competition, org, comp),
                 asyncio.to_thread(client.logs, org, comp, tail=80),
             )
-            if generation != self.contest_generation:
+            if not self._contest_is_current(generation, org, comp):
                 return
             self.play_snapshot = snapshot
             status = {
@@ -1886,6 +1969,8 @@ class NitroTUI(App[int]):
             self.query_one("#play-content", Static).update(play_details(status))
             self.set_status(f"Play: {status.get('state') or 'unknown'}", "success")
         except Exception as exc:
+            if not self._contest_is_current(generation, org, comp):
+                return
             self.play_snapshot = {}
             self.query_one("#play-content", Static).update(
                 "PLAY MANAGER UNAVAILABLE\n\n"
@@ -2173,6 +2258,8 @@ class NitroTUI(App[int]):
         request = await self.push_screen_wait(SubmitScreen())
         if not request or not self.current_contest or not self.current_task:
             return
+        contest_generation = self.contest_generation
+        task_generation = self.task_generation
         org, comp = contest_ref(self.current_contest)
         task_id = str(self.current_task.get("id"))
         self.set_status("Uploading submission…")
@@ -2193,6 +2280,15 @@ class NitroTUI(App[int]):
             )
             if not submission_id:
                 raise RuntimeError("Submission response did not contain an ID")
+            if not self._task_is_current(
+                contest_generation, task_generation, org, comp, task_id
+            ):
+                self.set_status(
+                    f"Submission {submission_id} queued for {org}/{comp} task "
+                    f"{task_id}; selection changed, so polling was not started.",
+                    "success",
+                )
+                return
             self.current_submission = {
                 "id": str(submission_id),
                 "state": "pending",
@@ -2205,19 +2301,33 @@ class NitroTUI(App[int]):
                 submission_details(self.current_submission)
             )
             self.set_status(f"Submission {submission_id} queued.", "success")
-            self.poll_submission(str(submission_id), self.task_generation)
+            self.poll_submission(
+                str(submission_id),
+                org,
+                comp,
+                task_id,
+                contest_generation,
+                task_generation,
+            )
         except Exception as exc:
-            self._network_error("Submission failed", exc)
+            if self._task_is_current(
+                contest_generation, task_generation, org, comp, task_id
+            ):
+                self._network_error("Submission failed", exc)
 
     @work(group="submission-poll", exclusive=True)
     async def poll_submission(
-        self, submission_id: str, task_generation: int
+        self,
+        submission_id: str,
+        org: str,
+        comp: str,
+        task_id: str,
+        contest_generation: int,
+        task_generation: int,
     ) -> None:
-        if not self.current_contest or not self.current_task:
-            return
-        org, comp = contest_ref(self.current_contest)
-        task_id = str(self.current_task.get("id"))
-        while task_generation == self.task_generation:
+        while self._task_is_current(
+            contest_generation, task_generation, org, comp, task_id
+        ):
             try:
                 submission = await self.session.call(
                     _load_submission_with_auth,
@@ -2227,9 +2337,14 @@ class NitroTUI(App[int]):
                     task_id=task_id,
                 )
             except Exception as exc:
-                self._network_error("Could not poll submission", exc)
+                if self._task_is_current(
+                    contest_generation, task_generation, org, comp, task_id
+                ):
+                    self._network_error("Could not poll submission", exc)
                 return
-            if task_generation != self.task_generation:
+            if not self._task_is_current(
+                contest_generation, task_generation, org, comp, task_id
+            ):
                 return
             self.current_submission = submission
             set_submission(submission)
