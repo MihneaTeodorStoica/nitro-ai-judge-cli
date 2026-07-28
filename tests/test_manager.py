@@ -1342,6 +1342,7 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('return "pulling"', script)
         self.assertIn('operation.status === "failed"', script)
         self.assertIn('return "error"', script)
+        self.assertIn('some(image => image.fallback)) return "fallback"', script)
         self.assertIn("effectiveImageState(item) === imageFilter.dataset.value", script)
         self.assertIn("status(imageStatus, effectiveImageState(competition))", script)
         self.assertIn(

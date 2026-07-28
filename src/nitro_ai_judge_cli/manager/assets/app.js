@@ -141,6 +141,7 @@
       if (["queued", "running"].includes(operation.status)) return "pulling";
       if (operation.status === "failed") return "error";
     }
+    if (competition.image_state === "ready" && Object.values(competition.images || {}).some(image => image.fallback)) return "fallback";
     return competition.image_state;
   }
 
