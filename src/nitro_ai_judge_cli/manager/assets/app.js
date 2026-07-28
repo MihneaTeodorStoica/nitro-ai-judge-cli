@@ -30,6 +30,7 @@
   const dialog = document.querySelector("#delete-dialog");
   const confirmation = document.querySelector("#delete-confirmation");
   const removeImageDialog = document.querySelector("#remove-image-dialog");
+  const removeContainerDialog = document.querySelector("#remove-container-dialog");
   const loginDialog = document.querySelector("#nitro-login-dialog");
   const loginUsername = document.querySelector("#nitro-login-username");
   const loginPassword = document.querySelector("#nitro-login-password");
@@ -312,10 +313,17 @@
       } else {
         actions.append(actionButton("Play", "play", "primary"), actionButton("Pull", "pull"));
       }
-      if (competition.image_state === "ready" && !["running", "stopped"].includes(competition.workspace_state)) {
-        actions.append(actionButton("Remove images", "delete-image", "danger"));
+      const hasContainers = ["running", "stopped"].includes(competition.workspace_state);
+      if (hasContainers) {
+        actions.append(actionButton("Delete container", "delete-container", "danger"));
+      } else {
+        if (competition.image_state === "ready") {
+          actions.append(actionButton("Remove images", "delete-image", "danger"));
+        }
+        if (competition.workspace_state === "ready") {
+          actions.append(actionButton("Delete volume", "delete-menu", "danger"));
+        }
       }
-      if (competition.workspace_state !== "missing") actions.append(actionButton("Delete workspace", "delete-menu", "danger"));
       const busy = ["queued", "running"].includes(competition.operation?.status);
       for (const button of actions.querySelectorAll("button")) button.disabled = busy;
       rows.append(fragment);
@@ -529,6 +537,10 @@
         );
       } else if (button.dataset.action === "copy-link") {
         await copyJupyterLink(button, reference);
+      } else if (button.dataset.action === "delete-container") {
+        state.deleteRef = reference;
+        document.querySelector("#remove-container-reference").textContent = reference;
+        removeContainerDialog.showModal();
       } else if (button.dataset.action === "delete-menu") {
         state.deleteRef = reference;
         document.querySelector("#delete-reference").textContent = reference;
@@ -565,6 +577,16 @@
       await startAction(reference, "delete-workspace", { confirm_ref: reference });
     } catch (error) {
       showAlert(error.message, () => startAction(reference, "delete-workspace", { confirm_ref: reference }));
+    }
+  });
+
+  document.querySelector("#remove-container-confirm").addEventListener("click", async () => {
+    const reference = state.deleteRef;
+    removeContainerDialog.close();
+    try {
+      await startAction(reference, "delete-container");
+    } catch (error) {
+      showAlert(error.message, () => startAction(reference, "delete-container"));
     }
   });
 

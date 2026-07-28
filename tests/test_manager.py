@@ -1575,8 +1575,18 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('action === "copy-link" ? () => copyJupyterLink', script)
         self.assertIn('setAttribute("aria-live", "polite")', script)
         self.assertIn(
-            '!["running", "stopped"].includes(competition.workspace_state)',
+            'const hasContainers = ["running", "stopped"].includes(competition.workspace_state)',
             script,
+        )
+        self.assertIn(
+            'actionButton("Delete container", "delete-container", "danger")', script
+        )
+        self.assertIn('button.dataset.action === "delete-container"', script)
+        self.assertIn(
+            'startAction(reference, "delete-container")', script
+        )
+        self.assertIn(
+            'actionButton("Delete volume", "delete-menu", "danger")', script
         )
         self.assertIn("removeImageDialog.showModal()", script)
         self.assertIn('new EventSource("/nitro/api/v1/events")', script)
@@ -1666,6 +1676,10 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="browser-logout"', html)
         self.assertIn('id="live-alert"', html)
         self.assertIn('id="remove-image-confirm">Remove images', html)
+        self.assertIn("<h2>Delete volume?</h2>", html)
+        self.assertIn('class="danger-button">Delete volume</button>', html)
+        self.assertIn('id="remove-container-dialog"', html)
+        self.assertIn('id="remove-container-confirm">Yes, delete container', html)
         self.assertIn('autofocus>Cancel', html)
         self.assertNotIn('class="route-mark"', html)
         self.assertIn("Made with &lt;3 by Mihnea-Teodor Stoica, for the", html)
@@ -1867,11 +1881,15 @@ class ManagerProxyTests(unittest.IsolatedAsyncioTestCase):
             )
 
         async def websocket(request: web.Request) -> web.WebSocketResponse:
-            socket = web.WebSocketResponse()
+            socket = web.WebSocketResponse(
+                protocols=("v1.kernel.websocket.jupyter.org",)
+            )
             await socket.prepare(request)
             async for message in socket:
                 if message.type == WSMsgType.TEXT:
                     await socket.send_str(message.data)
+                elif message.type == WSMsgType.BINARY:
+                    await socket.send_bytes(message.data)
             return socket
 
         async def websocket_headers(request: web.Request) -> web.WebSocketResponse:
@@ -1990,6 +2008,20 @@ class ManagerProxyTests(unittest.IsolatedAsyncioTestCase):
         await socket.send_str("kernel-message")
         message = await socket.receive(timeout=2)
         self.assertEqual(message.data, "kernel-message")
+        await socket.close()
+
+    async def test_kernel_websocket_preserves_protocol_and_binary_frames(self) -> None:
+        protocol = "v1.kernel.websocket.jupyter.org"
+        socket = await self.client.ws_connect(
+            "/nitro/competitions/org/contest/jupyter/api/kernels/ws",
+            headers=self.headers,
+            protocols=(protocol,),
+        )
+        self.assertEqual(socket.protocol, protocol)
+        await socket.send_bytes(b"\x01kernel-message")
+        message = await socket.receive(timeout=2)
+        self.assertEqual(message.type, WSMsgType.BINARY)
+        self.assertEqual(message.data, b"\x01kernel-message")
         await socket.close()
 
     async def test_manager_credentials_are_stripped_for_http_and_websocket(self) -> None:

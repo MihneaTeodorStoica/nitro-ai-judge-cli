@@ -49,6 +49,11 @@ HOP_HEADERS = {
     "trailer",
     "transfer-encoding",
     "upgrade",
+    "sec-websocket-accept",
+    "sec-websocket-extensions",
+    "sec-websocket-key",
+    "sec-websocket-protocol",
+    "sec-websocket-version",
 }
 JUDGE_API_URL = "https://judge.nitro-ai.org/api"
 REMOTE_COMPETITION_PAGE_SIZE = 200
@@ -1005,11 +1010,25 @@ def _forward_headers(request: web.Request, target_host: str) -> dict[str, str]:
     return headers
 
 
-async def _proxy_websocket(request: web.Request, target: str, headers: dict[str, str]) -> web.WebSocketResponse:
-    downstream = web.WebSocketResponse(autoping=True)
-    await downstream.prepare(request)
+async def _proxy_websocket(
+    request: web.Request, target: str, headers: dict[str, str]
+) -> web.WebSocketResponse:
+    offered_protocols = tuple(
+        protocol.strip()
+        for value in request.headers.getall("Sec-WebSocket-Protocol", [])
+        for protocol in value.split(",")
+        if protocol.strip()
+    )
     session: ClientSession = request.app["http"]
-    async with session.ws_connect(target, headers=headers, autoping=True) as upstream:
+    async with session.ws_connect(
+        target, headers=headers, autoping=True, protocols=offered_protocols
+    ) as upstream:
+        downstream_protocols = (upstream.protocol,) if upstream.protocol else ()
+        downstream = web.WebSocketResponse(
+            autoping=True, protocols=downstream_protocols
+        )
+        await downstream.prepare(request)
+
         async def client_to_upstream() -> None:
             async for message in downstream:
                 if message.type == WSMsgType.TEXT:
@@ -1028,8 +1047,13 @@ async def _proxy_websocket(request: web.Request, target: str, headers: dict[str,
                 elif message.type in {WSMsgType.CLOSE, WSMsgType.CLOSED}:
                     await downstream.close()
 
-        tasks = [asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())]
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        tasks = [
+            asyncio.create_task(client_to_upstream()),
+            asyncio.create_task(upstream_to_client()),
+        ]
+        done, pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED
+        )
         for task in pending:
             task.cancel()
         await asyncio.gather(*done, *pending, return_exceptions=True)

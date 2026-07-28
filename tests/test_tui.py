@@ -627,11 +627,13 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
         ):
             app = tui.NitroTUI()
             async with app.run_test(size=(120, 30)) as pilot:
-                await pilot.pause(0.2)
+                await app.workers.wait_for_complete()
+                await pilot.pause()
                 contests = app.query_one("#contest-list", ListView)
                 first_contest_item = contests.children[0]
                 self.assertTrue(await pilot.click(contests.children[0]))
-                await pilot.pause(0.2)
+                await app.workers.wait_for_complete()
+                await pilot.pause()
                 tasks = app.query_one("#task-list", ListView)
                 self.assertIs(contests.children[0], first_contest_item)
                 self.assertTrue(app.query_one("#contest-pane").display)

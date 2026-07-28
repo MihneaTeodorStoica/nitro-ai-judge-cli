@@ -121,14 +121,23 @@
     <tr class="operation-row" hidden><td colspan="5"><div class="operation"><div class="operation-heading"><div><strong class="operation-stage"></strong><span class="operation-message"></span></div><div class="operation-controls"><button type="button" class="operation-cancel" hidden>Cancel</button><button type="button" class="operation-dismiss" aria-label="Dismiss operation" title="Dismiss" hidden>&times;</button></div></div><progress max="100"></progress><details><summary>Recent logs</summary><pre class="operation-logs"></pre></details></div></td></tr>
   </template>
 
+  <dialog id="remove-container-dialog">
+    <form method="dialog">
+      <p class="eyebrow">Local container</p>
+      <h2>Delete container?</h2>
+      <p>This removes the competition containers and private network for <strong id="remove-container-reference"></strong>. Workspace data and images remain available.</p>
+      <div class="dialog-actions"><button value="cancel" class="quiet-button" autofocus>No</button><button type="button" class="danger-button" id="remove-container-confirm">Yes, delete container</button></div>
+    </form>
+  </dialog>
+
   <dialog id="delete-dialog">
     <form method="dialog" id="delete-form">
       <p class="eyebrow">Permanent deletion</p>
-      <h2>Delete workspace data?</h2>
-      <p>This removes the private workspace volume. Images remain available.</p>
+      <h2>Delete volume?</h2>
+      <p>This permanently removes the private workspace volume. Images remain available.</p>
       <label><span>Type <strong id="delete-reference"></strong> to confirm</span><input id="delete-confirmation" autocomplete="off"></label>
       <p class="dialog-error" id="delete-error" aria-live="polite"></p>
-      <div class="dialog-actions"><button value="cancel" class="quiet-button">Cancel</button><button value="confirm" class="danger-button">Delete workspace</button></div>
+      <div class="dialog-actions"><button value="cancel" class="quiet-button">Cancel</button><button value="confirm" class="danger-button">Delete volume</button></div>
     </form>
   </dialog>
 
