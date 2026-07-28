@@ -1189,7 +1189,9 @@ class DockerBackend:
                     stage="validating",
                     status=409,
                 )
-            for image in self.image_names(org, competition):
+            current_images = await self.images(org, competition)
+            for role in ("notebook", "proxy"):
+                image = str(current_images[role]["name"])
                 if await self._image_present(image):
                     await progress("applying", f"Removing image tag {image}")
                     await self.run(["docker", "image", "rm", image], timeout=60)
@@ -1270,10 +1272,6 @@ class DockerBackend:
                     ),
                     adoption=adoption,
                 )
-                try:
-                    os.unlink(compose_path)
-                except FileNotFoundError:
-                    pass
             snapshot = await self.inspect_competition(org, competition)
             if action == "delete-container" and await self._volume_details(workspace_target):
                 snapshot["workspace"] = workspace_target
