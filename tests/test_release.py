@@ -19,13 +19,13 @@ from nitro_ai_judge_cli.play_protocol import (
 
 
 class ReleaseTests(unittest.TestCase):
-    def test_3_1_0_versions_keep_protocol_compatibility(self) -> None:
+    def test_3_1_1_versions_keep_protocol_compatibility(self) -> None:
         pyproject = Path(__file__).parents[1].joinpath("pyproject.toml").read_text()
-        self.assertIn('version = "3.1.0"', pyproject)
-        self.assertEqual(MANAGER_VERSION, "3.1.0")
+        self.assertIn('version = "3.1.1"', pyproject)
+        self.assertEqual(MANAGER_VERSION, "3.1.1")
         self.assertEqual(
             DEFAULT_MANAGER_IMAGE,
-            "ghcr.io/mihneateodorstoica/naij-play-manager:3.1.0",
+            "ghcr.io/mihneateodorstoica/naij-play-manager:3.1.1",
         )
         self.assertEqual(API_VERSION, 1)
         self.assertEqual(MINIMUM_CLI_VERSION, "3.0.0")
@@ -71,7 +71,7 @@ class ReleaseTests(unittest.TestCase):
                 "update",
                 "ghcr.io/mihneateodorstoica/naij-play-manager:3.1.0",
                 None,
-                "ghcr.io/mihneateodorstoica/naij-play-manager:3.1.0",
+                DEFAULT_MANAGER_IMAGE,
                 True,
             ),
             (
@@ -117,7 +117,7 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(
                         play,
                         "install_manager",
-                        return_value={"manager_version": "3.1.0"},
+                        return_value={"manager_version": "3.1.1"},
                     ) as install,
                     patch("builtins.print"),
                 ):

@@ -1189,9 +1189,10 @@ class DockerBackend:
                     stage="validating",
                     status=409,
                 )
-            current_images = await self.images(org, competition)
-            for role in ("notebook", "proxy"):
-                image = str(current_images[role]["name"])
+            image_candidates = tuple(
+                dict.fromkeys((*self.image_names(org, competition), *FALLBACK_IMAGES))
+            )
+            for image in image_candidates:
                 if await self._image_present(image):
                     await progress("applying", f"Removing image tag {image}")
                     await self.run(["docker", "image", "rm", image], timeout=60)

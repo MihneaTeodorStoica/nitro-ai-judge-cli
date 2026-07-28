@@ -569,47 +569,44 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.backend._pull_image.assert_not_awaited()
 
     async def test_delete_image_removes_only_scoped_tags(self) -> None:
-        snapshot = {
-            "reference": "org/contest",
-            "image_state": "missing",
-            "workspace_state": "ready",
-        }
-        cases = (
-            ("primary", tuple(self.backend.image_names("org", "contest"))),
-            ("fallback", FALLBACK_IMAGES),
+        primary = tuple(self.backend.image_names("org", "contest"))
+        image_candidates = tuple(dict.fromkeys((*primary, *FALLBACK_IMAGES)))
+        self.backend._atomic_compose(
+            self.backend.compose_path("org", "contest"),
+            self.backend._compose(
+                "org", "contest", gpu=False, pull_policy="never", images=primary
+            ),
         )
-        for label, expected in cases:
-            with self.subTest(label=label):
-                self.backend._atomic_compose(
-                    self.backend.compose_path("org", "contest"),
-                    self.backend._compose(
-                        "org", "contest", gpu=False, pull_policy="never", images=expected
-                    ),
-                )
-                self.backend.run = AsyncMock(return_value=(0, "", ""))
-                self.backend._image_present = AsyncMock(
-                    side_effect=lambda image, expected=expected: image in expected
-                )
-                self.backend.inspect_competition = AsyncMock(return_value=snapshot)
+        removed_images: set[str] = set()
 
-                result = await self.backend.perform(
-                    "org", "contest", "delete-image", {}, AsyncMock()
-                )
+        async def run(command, *_args, **_kwargs):
+            if command[:3] == ["docker", "image", "rm"]:
+                removed_images.add(command[3])
+            return 0, "", ""
 
-                commands = [call.args[0] for call in self.backend.run.await_args_list]
-                removed = [
-                    command
-                    for command in commands
-                    if command[:3] == ["docker", "image", "rm"]
-                ]
-                self.assertEqual(
-                    removed, [["docker", "image", "rm", image] for image in expected]
-                )
-                self.assertTrue(all("--force" not in command for command in removed))
-                self.assertFalse(
-                    any("volume" in command or "down" in command for command in commands)
-                )
-                self.assertEqual(result, snapshot)
+        async def image_present(image: str) -> bool:
+            return image in image_candidates and image not in removed_images
+
+        self.backend.run = AsyncMock(side_effect=run)
+        self.backend._image_present = AsyncMock(side_effect=image_present)
+
+        result = await self.backend.perform(
+            "org", "contest", "delete-image", {}, AsyncMock()
+        )
+
+        commands = [call.args[0] for call in self.backend.run.await_args_list]
+        removed = [
+            command for command in commands if command[:3] == ["docker", "image", "rm"]
+        ]
+        self.assertEqual(
+            removed, [["docker", "image", "rm", image] for image in image_candidates]
+        )
+        self.assertTrue(all("--force" not in command for command in removed))
+        self.assertFalse(
+            any(command[:3] == ["docker", "compose", "down"] for command in commands)
+        )
+        self.assertEqual(result["image_state"], "missing")
+        self.assertFalse(result.get("image_fallback"))
     async def test_delete_workspace_preserves_image_metadata(self) -> None:
         workspace_name = self.backend.names("org", "contest")["workspace"]
         self.backend._atomic_compose(
