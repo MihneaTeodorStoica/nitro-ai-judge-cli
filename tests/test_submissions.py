@@ -274,6 +274,43 @@ class SubmissionTests(unittest.TestCase):
             )
 
         self.assertIn("#2 partial None/? | complete None/?", output.getvalue())
+    def test_submission_pagination_is_capped_and_stops_on_repeated_pages(self) -> None:
+        requested: list[int] = []
+
+        def unique_request(**kwargs: object) -> tuple[int, str, dict[str, str]]:
+            page = int(kwargs["params"]["page"])  # type: ignore[index]
+            requested.append(page)
+            return 200, json.dumps({"items": [{"id": page}], "lastPage": 10**9}), {}
+
+        with (
+            patch.object(submissions, "MAX_PAGINATION_PAGES", 4),
+            patch.object(submissions, "api_request_text", side_effect=unique_request),
+        ):
+            items, last_page = submissions.load_submissions(
+                ("", ""), "token", "org", "contest", "7",
+                author=None, page=None, page_size=10, mode="partial",
+            )
+        self.assertEqual(requested, [1, 2, 3, 4])
+        self.assertEqual(len(items), 4)
+        self.assertEqual(last_page, 4)
+
+        requested.clear()
+
+        def repeated_request(**kwargs: object) -> tuple[int, str, dict[str, str]]:
+            page = int(kwargs["params"]["page"])  # type: ignore[index]
+            requested.append(page)
+            return 200, json.dumps(
+                {"items": [{"id": min(page, 2)}], "lastPage": 10**9}
+            ), {}
+
+        with patch.object(
+            submissions, "api_request_text", side_effect=repeated_request
+        ):
+            submissions.load_submissions(
+                ("", ""), "token", "org", "contest", "7",
+                author=None, page=None, page_size=10, mode="partial",
+            )
+        self.assertEqual(requested, [1, 2, 3])
 
     def test_polling_returns_first_non_pending_feedback(self) -> None:
         pending = {"id": "one", "state": "pending"}

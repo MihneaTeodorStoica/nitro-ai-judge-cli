@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from html.parser import HTMLParser
 import json
 import os
@@ -13,11 +12,10 @@ import zipfile
 from typing import Any
 
 from .api import api_request_bytes, api_request_text, body_json, error_preview, int_payload, list_payload, parse_singlefetch, request, request_text
-from .config import BASE_URL, DEFAULT_PAGE_SIZE, TASK_FILE_CATEGORIES, DEFAULT_TASK_FILE_CATEGORIES, TASK_FILE_PAGE_LABELS
+from .config import BASE_URL, DEFAULT_PAGE_SIZE, TASK_FILE_CATEGORIES, DEFAULT_TASK_FILE_CATEGORIES, TASK_FILE_PAGE_LABELS, MAX_PAGINATION_PAGES
 from .state import update_cache
 from .ui import _start_spinner, _stop_spinner, format_datetime_ms
 
-COMPETITION_PAGE_WORKERS = 4
 ZIP_BOMB_MAX_FILES = 10_000
 ZIP_BOMB_MAX_UNCOMPRESSED_BYTES = 5 * 1024**3
 ZIP_BOMB_MAX_COMPRESSION_RATIO = 200
@@ -281,47 +279,31 @@ def load_competitions(
         cookies, bearer, page=1, page_size=page_size, featured=featured
     )
     all_competitions = list(competitions)
-    if last_page == 0:
-        previous_page = repr(competitions)
-        for next_page in range(2, 1001):
-            page_items, discovered_last_page = load_competitions_page(
-                cookies,
-                bearer,
-                page=next_page,
-                page_size=page_size,
-                featured=featured,
-            )
-            if not page_items or repr(page_items) == previous_page:
-                break
-            all_competitions.extend(page_items)
-            previous_page = repr(page_items)
-            if discovered_last_page and next_page >= discovered_last_page:
-                break
-        return all_competitions
-    if last_page <= 1:
+    if not competitions or last_page == 1:
         return all_competitions
 
-    page_results: dict[int, list[dict[str, Any]]] = {}
-    max_workers = min(COMPETITION_PAGE_WORKERS, last_page - 1)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                load_competitions_page,
-                cookies,
-                bearer,
-                page=next_page,
-                page_size=page_size,
-                featured=featured,
-            ): next_page
-            for next_page in range(2, last_page + 1)
-        }
-        for future in as_completed(futures):
-            next_page = futures[future]
-            page_items, _ = future.result()
-            page_results[next_page] = page_items
-
-    for next_page in range(2, last_page + 1):
-        all_competitions.extend(page_results.get(next_page, []))
+    page_limit = min(
+        max(last_page, 1) if last_page else MAX_PAGINATION_PAGES,
+        MAX_PAGINATION_PAGES,
+    )
+    seen_pages = {repr(competitions)}
+    for next_page in range(2, page_limit + 1):
+        page_items, discovered_last_page = load_competitions_page(
+            cookies,
+            bearer,
+            page=next_page,
+            page_size=page_size,
+            featured=featured,
+        )
+        signature = repr(page_items)
+        if not page_items or signature in seen_pages:
+            break
+        all_competitions.extend(page_items)
+        seen_pages.add(signature)
+        if discovered_last_page and next_page >= min(
+            discovered_last_page, MAX_PAGINATION_PAGES
+        ):
+            break
     return all_competitions
 
 def print_competitions(competitions: list[dict[str, Any]]) -> None:

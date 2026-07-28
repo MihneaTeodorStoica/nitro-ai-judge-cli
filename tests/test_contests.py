@@ -99,6 +99,39 @@ class ContestRequestTests(unittest.TestCase):
             )
         self.assertEqual(items, [{"page": 1}, {"page": 2}, {"page": 3}])
 
+    def test_competition_pagination_is_capped_and_stops_on_repeated_pages(self) -> None:
+        requested: list[int] = []
+
+        def unique_page(*args: object, **kwargs: object) -> tuple[list[dict[str, int]], int]:
+            page = int(kwargs["page"])
+            requested.append(page)
+            return [{"page": page}], 10**9
+
+        with (
+            patch.object(contests, "MAX_PAGINATION_PAGES", 4),
+            patch.object(contests, "load_competitions_page", side_effect=unique_page),
+        ):
+            items = contests.load_competitions(
+                COOKIES, BEARER, page=None, page_size=20, featured=None
+            )
+        self.assertEqual(requested, [1, 2, 3, 4])
+        self.assertEqual(len(items), 4)
+
+        requested.clear()
+
+        def repeated_page(*args: object, **kwargs: object) -> tuple[list[dict[str, int]], int]:
+            page = int(kwargs["page"])
+            requested.append(page)
+            return [{"page": min(page, 2)}], 10**9
+
+        with patch.object(
+            contests, "load_competitions_page", side_effect=repeated_page
+        ):
+            contests.load_competitions(
+                COOKIES, BEARER, page=None, page_size=20, featured=None
+            )
+        self.assertEqual(requested, [1, 2, 3])
+
     def test_bare_api_lists_are_fetched_until_the_short_page(self) -> None:
         pages = {
             1: [{"id": 1}, {"id": 2}],
