@@ -748,7 +748,26 @@ def cmd_download_data(
     output_dir: str,
     output_path: str | None,
     force: bool,
+    list_only: bool = False,
 ) -> int:
+    if list_only:
+        try:
+            available = load_task_file_categories(
+                cookies, bearer, org, comp, task_id
+            )
+        except (RuntimeError, ValueError, OSError) as e:
+            print(f"Error: {e}")
+            return 1
+        if not available:
+            print("No task data files available")
+            return 0
+        for category in available:
+            label = TASK_FILE_CATEGORIES.get(category) or category.replace(
+                "_", " "
+            ).replace("-", " ").capitalize()
+            print(f"{category}\t{label}")
+        return 0
+
     try:
         results = download_task_data(
             cookies,

@@ -187,6 +187,7 @@ If saved context is missing or stale, Nitro AI Judge reports which `naij use` co
 Download one or more task-file categories with `-c`/`--category`. Supported categories are `statement`, `train_data`, `test_data`, `sample_output`, and `custom_archive`.
 
 ```bash
+naij download-data --list
 naij download-data -c statement -o TASK.md
 naij download-data -c train_data -c test_data -d data
 naij download-data -c test_data -o test_data.zip -f
@@ -194,6 +195,7 @@ naij download-data -c test_data -o test_data.zip -f
 
 Download options:
 
+- `--list`: show available canonical category keys and labels without writing files
 - `-c`, `--category`: category to download; repeat for multiple categories
 - `-d`, `--out-dir`: destination directory
 - `-o`, `--output`: destination file when downloading one category

@@ -38,7 +38,7 @@ OPTION_GROUPS = {
     "task": (("--help",),),
     "download-data": (
         ("-c", "--category"), ("-d", "--out-dir"), ("-o", "--output"),
-        ("-f", "--force"), ("--help",),
+        ("-f", "--force"), ("--list",), ("--help",),
     ),
     "submit": (
         ("-o", "--output"), ("-s", "--source"), ("-n", "--note"),
