@@ -61,6 +61,11 @@ jobs:
           cmp /tmp/naij-help /tmp/nitro-cli-help
           cmp /tmp/naij-help /tmp/naij-module-help
           test "$(cat /tmp/nitro-cli-warning)" = 'warning: `nitro-cli` is deprecated; use `naij`. It will be removed in 4.0.0.'
+          VERSION="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "$(naij --version)" = "naij ${VERSION}"
+          test "$(python -m nitro_ai_judge_cli --version)" = "naij ${VERSION}"
+          test "$(nitro-cli --version 2>/tmp/nitro-cli-version-warning)" = "naij ${VERSION}"
+          test "$(cat /tmp/nitro-cli-version-warning)" = 'warning: `nitro-cli` is deprecated; use `naij`. It will be removed in 4.0.0.'
       - uses: actions/upload-artifact@v4
         with:
           name: python-package-distributions

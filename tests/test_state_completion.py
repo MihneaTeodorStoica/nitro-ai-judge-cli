@@ -202,6 +202,16 @@ class StateTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), b"old")
         self.assertFalse(any(item.name.startswith(".naij-") for item in root.iterdir()))
 
+    def test_failed_credential_removal_preserves_credentials(self) -> None:
+        root = self.set_state_root()
+        state.save_state({"access_token": "secret"})
+
+        with patch.object(state.os, "unlink", side_effect=OSError("denied")):
+            with self.assertRaisesRegex(state.CredentialsError, "denied"):
+                state.clear_credentials()
+
+        self.assertTrue((root / "state.json").exists())
+
     def test_corrupt_credentials_raise_actionable_error_without_rewrite(self) -> None:
         root = self.set_state_root()
         root.mkdir()
@@ -459,6 +469,9 @@ class CompletionTests(unittest.TestCase):
         self.assertNotIn("-m", values)
         self.assertNotIn("--mode", values)
         self.assertEqual(completion.candidates(["login", "--username", ""], context), [])
+        self.assertIn("--password-stdin", completion.candidates(["login", ""], context))
+        self.assertEqual(completion.candidates(["lo"], context), ["login", "logout"])
+        self.assertEqual(completion.candidates(["--v"], context), ["--version"])
         self.assertNotIn(
             "always", completion.candidates(["play", "logs", "--pull", ""], context)
         )

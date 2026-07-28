@@ -14,7 +14,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from nitro_ai_judge_cli import cli, state  # noqa: E402
+from nitro_ai_judge_cli import __version__, cli, state  # noqa: E402
 
 
 def invoke(function, argv: list[str]) -> tuple[int, str, str]:
@@ -29,6 +29,17 @@ def invoke(function, argv: list[str]) -> tuple[int, str, str]:
 
 
 class EntrypointTests(unittest.TestCase):
+    def test_version_entrypoints_report_installed_version_without_runtime_setup(self) -> None:
+        with patch.object(cli, "configure_runtime", side_effect=AssertionError("runtime")):
+            canonical = invoke(cli.main, ["--version"])
+            short = invoke(cli.main, ["-V"])
+            legacy = invoke(cli.legacy_main, ["--version"])
+
+        self.assertEqual(canonical, (0, f"naij {__version__}\n", ""))
+        self.assertEqual(short, canonical)
+        self.assertEqual(legacy[:2], canonical[:2])
+        self.assertEqual(legacy[2], cli.LEGACY_WARNING + "\n")
+
     def test_legacy_help_has_canonical_output_and_exact_warning(self) -> None:
         canonical = invoke(cli.main, ["--help"])
         legacy = invoke(cli.legacy_main, ["--help"])
@@ -80,6 +91,102 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage: naij", result.stdout)
         self.assertNotIn("deprecated", result.stderr)
+
+    def test_python_module_reports_canonical_version(self) -> None:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(ROOT / "src")
+        result = subprocess.run(
+            [sys.executable, "-m", "nitro_ai_judge_cli", "--version"],
+            cwd=ROOT,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, f"naij {__version__}\n")
+
+
+class CredentialCommandTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        state.configure_state_dir(None)
+
+    def test_password_stdin_reads_one_line(self) -> None:
+        with (
+            patch.object(cli.sys, "stdin", io.StringIO("secret phrase\nignored\n")),
+            patch.object(cli, "cmd_login", return_value=1) as login,
+        ):
+            result = invoke(cli.main, ["login", "--username", "alice", "--password-stdin"])
+
+        self.assertEqual(result, (1, "", ""))
+        login.assert_called_once_with("alice", "secret phrase")
+
+    def test_password_stdin_rejects_empty_and_interactive_input(self) -> None:
+        with patch.object(cli.sys, "stdin", io.StringIO("secret\n")), patch.object(
+            cli, "cmd_login"
+        ) as login:
+            missing_username = invoke(cli.main, ["login", "--password-stdin"])
+        self.assertEqual(missing_username[0], 2)
+        self.assertIn("--username is required", missing_username[2])
+        login.assert_not_called()
+
+        with patch.object(cli.sys, "stdin", io.StringIO("")), patch.object(
+            cli, "cmd_login"
+        ) as login:
+            empty = invoke(
+                cli.main, ["login", "--username", "alice", "--password-stdin"]
+            )
+        self.assertEqual(empty[0], 2)
+        self.assertIn("empty password", empty[2])
+        login.assert_not_called()
+
+        terminal = io.StringIO("secret\n")
+        terminal.isatty = lambda: True  # type: ignore[method-assign]
+        with patch.object(cli.sys, "stdin", terminal), patch.object(
+            cli, "cmd_login"
+        ) as login:
+            interactive = invoke(
+                cli.main, ["login", "--username", "alice", "--password-stdin"]
+            )
+        self.assertEqual(interactive[0], 2)
+        self.assertIn("requires piped input", interactive[2])
+        login.assert_not_called()
+
+    def test_logout_removes_only_custom_root_credentials_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state.configure_state_dir(str(root))
+            state.save_state({"access_token": "secret"})
+            state.save_context({"contest": {"org": "o", "comp": "c"}})
+            (root / "history").write_text("kept", encoding="utf-8")
+            (root / "play-manager").mkdir()
+            (root / "play-manager" / "manager.json").write_text("{}", encoding="utf-8")
+
+            first = invoke(cli.main, ["--state-dir", str(root), "logout"])
+            second = invoke(cli.main, ["--state-dir", str(root), "logout"])
+
+            self.assertEqual(first[0], 0)
+            self.assertIn("Logged out", first[1])
+            self.assertIn("Disconnect Nitro", first[1])
+            self.assertEqual(second[0], 0)
+            self.assertIn("Already logged out", second[1])
+            self.assertFalse((root / "state.json").exists())
+            self.assertTrue((root / "context.json").exists())
+            self.assertEqual((root / "history").read_text(encoding="utf-8"), "kept")
+            self.assertTrue((root / "play-manager" / "manager.json").exists())
+
+    def test_logout_reports_credential_removal_failure(self) -> None:
+        with patch.object(
+            cli,
+            "clear_credentials",
+            side_effect=state.CredentialsError("permission denied"),
+        ):
+            result = invoke(cli.main, ["logout"])
+
+        self.assertEqual(result[0], 1)
+        self.assertIn("permission denied", result[2])
 
 
 class ParserTests(unittest.TestCase):

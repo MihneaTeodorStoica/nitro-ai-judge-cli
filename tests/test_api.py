@@ -318,6 +318,25 @@ class AuthenticationTests(unittest.TestCase):
             self.assertEqual(api.cmd_login("alice", "wrong"), 1)
         self.assertEqual(output.getvalue().strip(), "Login failed: denied")
 
+    def test_cmd_login_redacts_password_from_failure_output(self) -> None:
+        output = io.StringIO()
+        with (
+            patch.object(
+                api,
+                "do_login",
+                return_value={
+                    "success": False,
+                    "tokens": None,
+                    "error": "rejected visible-secret",
+                },
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(api.cmd_login("alice", "visible-secret"), 1)
+
+        self.assertNotIn("visible-secret", output.getvalue())
+        self.assertIn("[redacted]", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -204,6 +204,21 @@ def save_state(value: dict[str, Any]) -> None:
     _write_json(paths.credentials, value)
 
 
+def clear_credentials() -> bool:
+    """Remove only the credential file for the resolved state root."""
+    path = resolve_state_paths().credentials
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise CredentialsError(
+            f"could not remove saved credentials in {path} ({exc})"
+        ) from exc
+    _fsync_directory(os.path.dirname(path))
+    return True
+
+
 def load_context() -> dict[str, Any]:
     path = resolve_state_paths().context
     if not os.path.exists(path):

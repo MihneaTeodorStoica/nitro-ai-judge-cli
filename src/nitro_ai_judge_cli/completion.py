@@ -10,7 +10,7 @@ from .state import load_context, selected_contest, selected_submission, selected
 
 
 COMMANDS = (
-    "login", "tui", "contests", "tasks", "task", "download-data", "play", "submit",
+    "login", "logout", "tui", "contests", "tasks", "task", "download-data", "play", "submit",
     "submissions", "submission", "set-final", "unset-final", "use", "ls",
     "show", "completion",
 )
@@ -18,7 +18,7 @@ SHELL_COMMANDS = (
     "help", "cd", "pwd", "l", "h", "?", "q", "quit", "exit", "..",
     "back", "unselect",
 )
-GLOBAL_OPTIONS = ("--api-url", "--submission-proxy", "--state-dir", "--help")
+GLOBAL_OPTIONS = ("--api-url", "--submission-proxy", "--state-dir", "-V", "--version", "--help")
 PLAY_ACTIONS = (
     "play", "pull", "start", "stop", "restart", "recreate",
     "delete-container", "delete-image", "delete-workspace", "logs", "status", "cancel", "open", "manager",
@@ -28,7 +28,7 @@ MANAGER_ACTIONS = (
     "uninstall", "purge", "sync-credentials",
 )
 OPTION_GROUPS = {
-    "login": (("--username",), ("--help",)),
+    "login": (("--username",), ("--password-stdin",), ("--help",)),
     "tui": (("--help",),),
     "contests": (
         ("--page",), ("--page-size",), ("--all-pages",), ("--all",),
