@@ -400,12 +400,13 @@ Shell conveniences:
 
 ## Native completion
 
-Generate completion for zsh, bash, or fish:
+Generate completion for zsh, bash, fish, or PowerShell:
 
 ```bash
 naij completion zsh
 naij completion bash
 naij completion fish
+naij completion powershell
 ```
 
 For the current shell session:
@@ -419,6 +420,9 @@ source <(naij completion bash)
 
 # fish
 naij completion fish | source
+
+# PowerShell
+naij completion powershell | Out-String | Invoke-Expression
 ```
 
 Completion resolves the current argument slot and shows only its next useful level. It does not mix options with an available contest, task, or submission; typing `-` switches immediately to remaining valid options. It lazily fetches a missing entity list on the first relevant Tab and saves it in the context cache. It fetches all competitions, only the selected or supplied competition's tasks, or the current user's partial and complete submissions for the selected task. Existing cache entries, including empty lists, suppress later requests; authentication and network failures stay silent and can be retried on a later Tab. Bare native completion remains command-only, while a blank interactive prompt offers only entities at the current context level.

@@ -75,6 +75,25 @@ class EntrypointTests(unittest.TestCase):
         self.assertEqual(result, (0, "up\n", ""))
         candidates.assert_called_once_with(["play", ""])
 
+    def test_literal_play_option_values_do_not_trigger_play_normalization(self) -> None:
+        with patch.object(cli, "configure_state_dir") as configure, patch.object(
+            cli, "load_context", return_value={}
+        ):
+            result = invoke(cli.main, ["--state-dir", "play", "use"])
+        self.assertEqual(result[0], 0)
+        configure.assert_called_once_with("play")
+
+        auth = ({}, ("", ""), "token")
+        with patch.object(cli, "require_auth", return_value=auth), patch.object(
+            cli, "load_context", return_value={
+                "contest": {"org": "org", "comp": "contest"},
+                "task": {"id": "task"},
+            }
+        ), patch.object(cli, "cmd_submit", return_value=0) as submit:
+            result = invoke(cli.main, ["submit", "-o", "play"])
+        self.assertEqual(result[0], 0)
+        self.assertEqual(submit.call_args.args[5], "play")
+
     def test_python_module_runs_canonical_help(self) -> None:
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(ROOT / "src")

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -439,6 +440,12 @@ class CompletionTests(unittest.TestCase):
                     completion.candidates([command, contest, ""], context),
                     ["1", "2", "3"],
                 )
+                self.assertEqual(
+                    completion.candidates(
+                        [command, "ceoai", "ceoai-2026-day-1", ""], context
+                    ),
+                    ["1", "2", "3"],
+                )
 
     def test_task_slots_distinguish_inherited_and_explicit_targets(self) -> None:
         context = self.context()
@@ -522,6 +529,10 @@ class CompletionTests(unittest.TestCase):
         )
         self.assertEqual(
             completion.candidates(["play", "cancel", ""], context),
+            ["--help", "--yes"],
+        )
+        self.assertEqual(
+            completion.candidates(["play", "ps", ""], context),
             ["--help", "--yes"],
         )
         self.assertEqual(
@@ -690,7 +701,7 @@ class CompletionTests(unittest.TestCase):
                 os.chdir(old_cwd)
 
     def test_generated_scripts_register_both_names_but_call_naij(self) -> None:
-        for shell in ("zsh", "bash", "fish"):
+        for shell in ("zsh", "bash", "fish", "powershell"):
             with self.subTest(shell=shell):
                 generated = completion.script(shell)
                 self.assertIn("naij", generated)
@@ -699,10 +710,26 @@ class CompletionTests(unittest.TestCase):
                 self.assertNotIn("nitro-cli __complete", generated)
         self.assertIn('"${words[@]:1}"', completion.script("zsh"))
         self.assertIn("commandline -ct", completion.script("fish"))
+        powershell = completion.script("powershell")
+        self.assertIn("Register-ArgumentCompleter -Native", powershell)
+        self.assertIn("$wordToComplete", powershell)
+        self.assertIn("CompletionResult", powershell)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell smoke test runs on Windows CI")
+    def test_generated_powershell_script_parses_on_windows(self) -> None:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", "-"],
+            input=completion.script("powershell"),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_unknown_completion_shell_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported shell"):
-            completion.script("powershell")
+            completion.script("nushell")
 
 
 if __name__ == "__main__":
