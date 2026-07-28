@@ -42,7 +42,11 @@ class DockerEndpoint:
 
 
 def run_process(
-    command: list[str], *, check: bool = True, input_text: str | None = None
+    command: list[str],
+    *,
+    check: bool = True,
+    input_text: str | None = None,
+    timeout: float = 30,
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
@@ -52,9 +56,15 @@ def run_process(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            timeout=timeout,
         )
     except FileNotFoundError as exc:
         raise RuntimeError("Docker is not installed or not on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        operation = " ".join(command[:3])
+        raise RuntimeError(
+            f"Docker operation timed out after {timeout:g} seconds: {operation}"
+        ) from exc
     if check and result.returncode:
         details = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(details or f"{command[0]} exited with {result.returncode}")
@@ -140,6 +150,11 @@ def validate_manager_exposure(
     tls_key: str | None,
     public_url: str | None,
 ) -> None:
+    if bool(tls_cert) != bool(tls_key):
+        raise ValueError("--tls-cert and --tls-key must be supplied together")
+    for path, label in ((tls_cert, "TLS certificate"), (tls_key, "TLS key")):
+        if path and not os.path.isfile(path):
+            raise ValueError(f"{label} does not exist: {path}")
     loopback = bind in {"127.0.0.1", "::1", "localhost"}
     if loopback:
         return
@@ -150,9 +165,6 @@ def validate_manager_exposure(
     parsed = urlsplit(public_url)
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("--public-url must be an absolute HTTPS URL")
-    for path, label in ((tls_cert, "TLS certificate"), (tls_key, "TLS key")):
-        if not os.path.isfile(path):
-            raise ValueError(f"{label} does not exist: {path}")
 
 
 def generate_manager_compose(
@@ -313,6 +325,7 @@ def install_manager(
     public_url: str | None = None,
     update: bool = False,
 ) -> dict[str, Any]:
+    bind = "127.0.0.1" if bind == "localhost" else bind
     validate_manager_exposure(
         bind, tls_cert=tls_cert, tls_key=tls_key, public_url=public_url
     )
@@ -333,12 +346,27 @@ def install_manager(
     host = "localhost" if bind in {"127.0.0.1", "::1"} else bind
     public_url = (public_url or f"{scheme}://{host}:{port}").rstrip("/")
     if _port_in_use(bind, port):
+        local_state = old_config is not None and os.path.isfile(paths["token"])
         try:
-            existing = ManagerClient(public_url).info()
+            probe = ManagerClient(public_url)
+            existing = probe.info()
             verify_manager_info(existing)
         except Exception as exc:
             raise RuntimeError(
                 f"Port {bind}:{port} is occupied by another service; choose a different --port"
+            ) from exc
+        if not local_state:
+            raise RuntimeError(
+                "A compatible Play manager is running on this port, but its local "
+                "configuration or API credential is missing; restore the original "
+                "NAIJ state directory or choose another --port"
+            )
+        try:
+            ManagerClient.from_state().competitions()
+        except Exception as exc:
+            raise RuntimeError(
+                "The running Play manager could not authenticate with the saved "
+                "local state; restore its API credential or choose another --port"
             ) from exc
         if not update:
             return existing
@@ -366,7 +394,7 @@ def install_manager(
     compose = generate_manager_compose(config, endpoint)
     image_present = run_process(["docker", "image", "inspect", image], check=False).returncode == 0
     if update or not image_present:
-        run_process(["docker", "pull", image])
+        run_process(["docker", "pull", image], timeout=1800)
     try:
         atomic_write(
             paths["config"],
@@ -376,7 +404,7 @@ def install_manager(
             paths["compose"],
             (json.dumps(compose, indent=2, sort_keys=True) + "\n").encode(),
         )
-        run_process(_compose_command("up", "-d", "--remove-orphans"))
+        run_process(_compose_command("up", "-d", "--remove-orphans"), timeout=300)
         info = _verify_manager()
         sync_manager_credentials(required=False)
         from .play_legacy import discover_legacy_environments
@@ -392,7 +420,11 @@ def install_manager(
                 (json.dumps(old_config, indent=2, sort_keys=True) + "\n").encode(),
             )
             atomic_write(paths["compose"], old_compose)
-            run_process(_compose_command("up", "-d", "--remove-orphans"), check=False)
+            run_process(
+                _compose_command("up", "-d", "--remove-orphans"),
+                check=False,
+                timeout=300,
+            )
         raise
 
 
@@ -426,7 +458,7 @@ def manager_compose_action(action: str) -> None:
         raise RuntimeError("Play manager is not installed")
     if action not in {"start", "stop", "restart"}:
         raise ValueError(f"Unsupported manager action: {action}")
-    run_process(_compose_command(action))
+    run_process(_compose_command(action), timeout=180)
     if action != "stop":
         _verify_manager()
 
@@ -434,7 +466,7 @@ def manager_compose_action(action: str) -> None:
 def uninstall_manager() -> None:
     if not load_manager_config():
         return
-    run_process(_compose_command("down", "--remove-orphans"))
+    run_process(_compose_command("down", "--remove-orphans"), timeout=180)
 
 
 def purge_manager_state(*, force: bool = False) -> None:
@@ -453,7 +485,7 @@ def purge_manager_state(*, force: bool = False) -> None:
             raise RuntimeError(
                 f"Refusing to remove volume {MANAGER_VOLUME}: ownership label is missing"
             )
-        run_process(["docker", "volume", "rm", MANAGER_VOLUME])
+        run_process(["docker", "volume", "rm", MANAGER_VOLUME], timeout=60)
 
 
 def normalized_credentials(value: dict[str, Any]) -> dict[str, Any]:

@@ -220,6 +220,22 @@ class ManagerClient:
                             "Unexpected response from Play manager log stream"
                         ) from exc
                     yield line + "\n"
+        except urllib.error.HTTPError as exc:
+            try:
+                parsed = json.loads(exc.read(65536) or b"{}")
+            except (UnicodeDecodeError, json.JSONDecodeError) as parse_error:
+                raise ManagerConnectionError(
+                    f"Unexpected response from Play manager (HTTP {exc.code})"
+                ) from parse_error
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            error = error if isinstance(error, dict) else {}
+            raise WireError(
+                str(error.get("type") or ErrorType.OPERATION_FAILED.value),
+                str(error.get("message") or f"Play manager returned HTTP {exc.code}"),
+                str(error.get("stage")) if error.get("stage") else None,
+                tuple(str(item) for item in error.get("logs", [])[-40:]),
+                exc.code,
+            ) from exc
         except (OSError, urllib.error.URLError) as exc:
             raise ManagerConnectionError("Play log stream disconnected") from exc
 
