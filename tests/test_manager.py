@@ -1588,6 +1588,14 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(
             'actionButton("Delete volume", "delete-menu", "danger")', script
         )
+        self.assertIn('confirmation.addEventListener("input"', script)
+        self.assertIn(
+            "deleteConfirm.disabled = confirmation.value !== state.deleteRef", script
+        )
+        self.assertIn(
+            'if (event.key !== "Enter") return;\n    event.preventDefault();\n    if (!deleteConfirm.disabled) {\n      document.querySelector("#delete-form").requestSubmit(deleteConfirm);',
+            script,
+        )
         self.assertIn("removeImageDialog.showModal()", script)
         self.assertIn('new EventSource("/nitro/api/v1/events")', script)
         self.assertIn('load({ cached: true, silent: true })', script)
@@ -1677,7 +1685,7 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="live-alert"', html)
         self.assertIn('id="remove-image-confirm">Remove images', html)
         self.assertIn("<h2>Delete volume?</h2>", html)
-        self.assertIn('class="danger-button">Delete volume</button>', html)
+        self.assertIn('id="delete-confirm" value="confirm" class="danger-button" disabled>Delete volume</button>', html)
         self.assertIn('id="remove-container-dialog"', html)
         self.assertIn('id="remove-container-confirm">Yes, delete container', html)
         self.assertIn('autofocus>Cancel', html)
