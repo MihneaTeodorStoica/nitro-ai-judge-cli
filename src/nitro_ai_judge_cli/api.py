@@ -132,7 +132,8 @@ class APIClient:
 
 def decode_session(session_cookie: str) -> dict[str, Any] | None:
     try:
-        return json.loads(base64.b64decode(urllib.parse.unquote(session_cookie)))
+        value = json.loads(base64.b64decode(urllib.parse.unquote(session_cookie)))
+        return value if isinstance(value, dict) else None
     except Exception:
         return None
 
@@ -153,7 +154,12 @@ def encode_session(state: dict[str, Any]) -> str | None:
 def get_auth(state: dict[str, Any]) -> tuple[str | None, str | None, str] | None:
     cf = session = None
     access_token = state.get("access_token") or state.get("accessToken") or ""
-    for cookie in state.get("cookies", []):
+    if not isinstance(access_token, str):
+        access_token = ""
+    cookies = state.get("cookies", [])
+    for cookie in cookies if isinstance(cookies, list) else []:
+        if not isinstance(cookie, dict):
+            continue
         if cookie.get("name") == "cf_clearance":
             cf = cookie.get("value")
         elif cookie.get("name") == "Cookie":
@@ -161,7 +167,10 @@ def get_auth(state: dict[str, Any]) -> tuple[str | None, str | None, str] | None
     if session:
         decoded = decode_session(session)
         if decoded:
-            access_token = decoded.get("accessToken", "")
+            decoded_access_token = decoded.get("accessToken", "")
+            access_token = (
+                decoded_access_token if isinstance(decoded_access_token, str) else ""
+            )
     else:
         session = encode_session(state)
     if not access_token:
@@ -451,7 +460,10 @@ def save_token_state(tokens: dict[str, Any], username: str | None = None) -> Non
 def refresh_saved_tokens(state: dict[str, Any]) -> dict[str, Any] | None:
     refresh_token = state.get("refresh_token") or state.get("refreshToken")
     if not refresh_token:
-        for cookie in state.get("cookies", []):
+        cookies = state.get("cookies", [])
+        for cookie in cookies if isinstance(cookies, list) else []:
+            if not isinstance(cookie, dict):
+                continue
             if cookie.get("name") == "Cookie":
                 decoded = decode_session(cookie.get("value", "")) or {}
                 refresh_token = decoded.get("refreshToken")
@@ -536,7 +548,11 @@ def cmd_login(username: str | None, password: str | None) -> int:
             print("Aborted.")
             return 1
 
-    result = do_login(username, password)
+    try:
+        result = do_login(username, password)
+    except RedirectError as exc:
+        print(f"Login failed: {exc}")
+        return 1
 
     if result["success"] and result.get("tokens"):
         save_token_state(result["tokens"], result.get("username"))

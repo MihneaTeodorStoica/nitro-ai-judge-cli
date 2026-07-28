@@ -210,6 +210,16 @@ class PayloadTests(unittest.TestCase):
 
 
 class AuthenticationTests(unittest.TestCase):
+    def test_malformed_credential_fields_do_not_raise(self) -> None:
+        self.assertEqual(
+            api.get_auth({"access_token": "abc", "cookies": None}),
+            (None, None, "abc"),
+        )
+        self.assertIsNone(api.get_auth({"access_token": 123, "cookies": [None]}))
+
+        encoded = urllib.parse.quote(base64.b64encode(b"[]").decode())
+        self.assertIsNone(api.decode_session(encoded))
+
     def test_login_request_and_success_parsing(self) -> None:
         payload = {"accessToken": "access", "refreshToken": "refresh"}
         with patch.object(
@@ -336,6 +346,19 @@ class AuthenticationTests(unittest.TestCase):
 
         self.assertNotIn("visible-secret", output.getvalue())
         self.assertIn("[redacted]", output.getvalue())
+    def test_cmd_login_reports_redirect_errors_without_traceback(self) -> None:
+        for error in (
+            api.AuthenticationRedirect("Authentication required"),
+            api.RedirectError("Refused cross-origin redirect"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                output = io.StringIO()
+                with (
+                    patch.object(api, "do_login", side_effect=error),
+                    contextlib.redirect_stdout(output),
+                ):
+                    self.assertEqual(api.cmd_login("alice", "secret"), 1)
+                self.assertEqual(output.getvalue().strip(), f"Login failed: {error}")
 
 
 if __name__ == "__main__":
