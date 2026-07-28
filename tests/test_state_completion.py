@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -281,6 +282,44 @@ class StateTests(unittest.TestCase):
         self.assertNotIn("contest", context)
         self.assertNotIn("task", context)
         self.assertIn("cache", context)
+
+    def test_concurrent_cache_transactions_retain_both_updates(self) -> None:
+        self.set_state_root()
+        first_saving = threading.Event()
+        release_first = threading.Event()
+        second_finished = threading.Event()
+        real_save = state._save_context_unlocked
+
+        def delayed_save(value: dict[str, object]) -> None:
+            if not first_saving.is_set():
+                first_saving.set()
+                release_first.wait(2)
+            real_save(value)
+
+        def update(key: str) -> None:
+            state.update_cache("tasks", key, [{"id": key}])
+            if key == "b":
+                second_finished.set()
+
+        with patch.object(state, "_save_context_unlocked", side_effect=delayed_save):
+            first = threading.Thread(target=update, args=("a",))
+            second = threading.Thread(target=update, args=("b",))
+            first.start()
+            self.assertTrue(first_saving.wait(1))
+            second.start()
+            try:
+                self.assertFalse(second_finished.wait(0.05))
+            finally:
+                release_first.set()
+            first.join(2)
+            second.join(2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(
+            state.load_context()["cache"]["tasks"],
+            {"a": [{"id": "a"}], "b": [{"id": "b"}]},
+        )
 
     def test_explicit_empty_context_does_not_fall_back_to_disk(self) -> None:
         with patch.object(state, "load_context", side_effect=AssertionError("disk read")):

@@ -17,8 +17,8 @@ from .state import (
     atomic_write,
     cached_items,
     load_context,
+    mutate_context,
     prepare_history,
-    save_context,
     selected_contest,
     selected_submission,
     selected_task,
@@ -154,17 +154,18 @@ def save_shell_history() -> None:
 
 
 def _back() -> None:
-    context = load_context()
-    if selected_submission(context):
-        context.pop("submission", None)
-    elif selected_task(context) is not None:
-        context.pop("task", None)
-        context.pop("submission", None)
-    elif selected_contest(context):
-        context.pop("contest", None)
-        context.pop("task", None)
-        context.pop("submission", None)
-    save_context(context)
+    def back(context: dict[str, Any]) -> None:
+        if selected_submission(context):
+            context.pop("submission", None)
+        elif selected_task(context) is not None:
+            context.pop("task", None)
+            context.pop("submission", None)
+        elif selected_contest(context):
+            context.pop("contest", None)
+            context.pop("task", None)
+            context.pop("submission", None)
+
+    mutate_context(back)
 
 
 def _contest_candidates(context: dict[str, Any]) -> list[dict[str, Any]]:
