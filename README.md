@@ -122,6 +122,12 @@ refresh remains an access-denied error rather than reopening login repeatedly.
 Loaded task statements are merged into the task cache, so reopening a task can
 show its full statement before the next network refresh.
 
+Use `naij ls --offline` or `naij show --offline` to browse the selected cached
+scope without authentication or network access. Cached output is marked and
+reports that freshness is unavailable. Inspect or invalidate stale entries with
+`naij cache status` and `naij cache clear [contests|tasks|submissions|all]`;
+clearing cache never changes credentials or the current selection.
+
 Release screenshots and the keyboard walkthrough will be added under
 `docs/assets/` with the `v3.0.0` release capture; the recording contract is in
 [`docs/assets/README.md`](docs/assets/README.md).

@@ -293,6 +293,18 @@ class ParserTests(unittest.TestCase):
         args = cli.build_parser().parse_args(["download-data", "--list"])
         self.assertTrue(args.list_only)
         self.assertIsNone(args.out_dir)
+    def test_cache_and_offline_flags_are_parsed(self) -> None:
+        parser = cli.build_parser()
+        self.assertTrue(parser.parse_args(["ls", "--offline"]).offline)
+        self.assertTrue(parser.parse_args(["show", "--offline"]).offline)
+        self.assertEqual(
+            parser.parse_args(["cache", "clear"]).kind,
+            "all",
+        )
+        self.assertEqual(
+            parser.parse_args(["cache", "clear", "tasks"]).kind,
+            "tasks",
+        )
 
     def test_task_target_resolution_prefers_explicit_values_without_mutation(self) -> None:
         context = {
@@ -552,6 +564,131 @@ class ContextDispatchTests(unittest.TestCase):
                     result = cli.main(["show"])
         self.assertEqual(result, 1)
         self.assertIn("naij use", stdout.getvalue())
+
+    def test_cache_status_and_clear_preserve_selection_and_credentials(self) -> None:
+        state.save_state({"access_token": "secret"})
+        state.update_cache("contests", "featured", [])
+        state.update_cache("tasks", "org/contest", [{"id": "task"}])
+        state.update_cache("submissions", "org/contest/task", [])
+        state.set_contest({"organizationSlug": "org", "competitionSlug": "contest"})
+        state.set_task({"id": "task"})
+
+        status = invoke(cli.main, ["cache", "status"])
+        self.assertEqual(status[0], 0)
+        self.assertIn("freshness unavailable", status[1])
+        self.assertIn("contests/featured: 0 records", status[1])
+        self.assertIn("tasks/org/contest: 1 records", status[1])
+
+        self.assertEqual(invoke(cli.main, ["cache", "clear", "tasks"])[0], 0)
+        context = state.load_context()
+        self.assertEqual(state.selected_contest(context), ("org", "contest"))
+        self.assertEqual(state.selected_task(context), "task")
+        self.assertNotIn("tasks", context["cache"])
+        self.assertIn("contests", context["cache"])
+        self.assertEqual(state.load_state(), {"access_token": "secret"})
+
+        self.assertEqual(invoke(cli.main, ["cache", "clear"])[0], 0)
+        self.assertEqual(invoke(cli.main, ["cache", "clear"])[0], 0)
+        context = state.load_context()
+        self.assertEqual(context["cache"], {})
+        self.assertEqual(state.selected_task(context), "task")
+
+    def test_offline_ls_uses_cached_context_without_authentication(self) -> None:
+        contest = {
+            "organizationSlug": "org",
+            "competitionSlug": "contest",
+            "title": "Cached Contest",
+        }
+        contexts = (
+            (
+                {"cache": {"contests": {"featured": [contest]}}},
+                "Cached Contest",
+            ),
+            (
+                {
+                    "contest": contest,
+                    "cache": {"tasks": {"org/contest": [{"id": "task", "title": "Cached Task"}]}},
+                },
+                "Cached Task",
+            ),
+            (
+                {
+                    "contest": contest,
+                    "task": {"id": "task"},
+                    "cache": {
+                        "submissions": {
+                            "org/contest/task": [
+                                {"id": "submission-7", "state": "done", "partialTaskScore": 42}
+                            ]
+                        }
+                    },
+                },
+                "42 / 100",
+            ),
+        )
+        with patch.object(cli, "require_auth", side_effect=AssertionError("auth")):
+            for context, expected in contexts:
+                with self.subTest(expected=expected):
+                    state.save_context(context)
+                    result = invoke(cli.main, ["ls", "--offline"])
+                    self.assertEqual(result[0], 0)
+                    self.assertIn("[cached; freshness unavailable]", result[1])
+                    self.assertIn(expected, result[1])
+
+    def test_offline_show_uses_cached_task_and_submission_details(self) -> None:
+        contest = {"organizationSlug": "org", "competitionSlug": "contest"}
+        task_context = {
+            "contest": contest,
+            "task": {"id": "backend-task", "title": "Detailed", "statement": "Cached statement"},
+            "cache": {
+                "tasks": {
+                    "org/contest": [
+                        {"id": "other", "title": "Other"},
+                        {"id": "backend-task", "title": "Detailed"},
+                    ]
+                }
+            },
+        }
+        with patch.object(cli, "require_auth", side_effect=AssertionError("auth")):
+            state.save_context(task_context)
+            task = invoke(cli.main, ["show", "--offline"])
+            self.assertEqual(task[0], 0)
+            self.assertIn("Task number: 2", task[1])
+            self.assertIn("ID: backend-task", task[1])
+            self.assertIn("Cached statement", task[1])
+
+            submission_context = {
+                **task_context,
+                "submission": {"id": "submission-7", "verdictMessage": "Cached verdict"},
+                "cache": {
+                    **task_context["cache"],
+                    "submissions": {
+                        "org/contest/backend-task": [
+                            {"id": "submission-7", "state": "done", "partialTaskScore": 42}
+                        ]
+                    },
+                },
+            }
+            state.save_context(submission_context)
+            submission = invoke(cli.main, ["show", "--offline"])
+            self.assertEqual(submission[0], 0)
+            self.assertIn("Submission: submission-7", submission[1])
+            self.assertIn("Cached verdict", submission[1])
+
+    def test_offline_missing_or_incomplete_cache_has_refresh_guidance(self) -> None:
+        state.save_context(
+            {
+                "contest": {"organizationSlug": "org", "competitionSlug": "contest"},
+                "task": {"id": "task"},
+                "cache": {"tasks": {"org/contest": [{"id": "task"}]}},
+            }
+        )
+        with patch.object(cli, "require_auth", side_effect=AssertionError("auth")):
+            result = invoke(cli.main, ["show", "--offline"])
+
+        self.assertEqual(result[0], 1)
+        self.assertIn("incomplete", result[1])
+        self.assertIn("without --offline to refresh", result[1])
 
 
 if __name__ == "__main__":

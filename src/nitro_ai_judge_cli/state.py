@@ -395,6 +395,22 @@ def update_cache(kind: str, key: str, items: list[dict[str, Any]]) -> None:
     mutate_context(update)
 
 
+def clear_cache(kind: str = "all") -> None:
+    if kind not in {"all", "contests", "tasks", "submissions"}:
+        raise ValueError(f"unknown cache bucket: {kind}")
+
+    def clear(context: dict[str, Any]) -> None:
+        cache = context.get("cache")
+        if not isinstance(cache, dict):
+            return
+        if kind == "all":
+            cache.clear()
+        else:
+            cache.pop(kind, None)
+
+    mutate_context(clear)
+
+
 def cached_items(kind: str, key: str) -> list[dict[str, Any]]:
     cache = load_context().get("cache", {})
     bucket = cache.get(kind, {}) if isinstance(cache, dict) else {}
