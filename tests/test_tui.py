@@ -532,6 +532,7 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
         self.cache_selection()
         started = threading.Event()
         release = threading.Event()
+        completed = threading.Event()
 
         def delayed_task(
             _cookies: tuple[str, str],
@@ -542,6 +543,7 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
         ) -> dict:
             started.set()
             self.assertTrue(release.wait(2))
+            completed.set()
             return {"task": {**TASKS[0], "statement": "stale"}}
 
         with (
@@ -555,8 +557,14 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
                 app.submissions = [{"id": "old-submission"}]
                 app.play_snapshot = {"workspace_state": "running"}
                 app.open_contest(OTHER_CONTEST)
+                tasks_worker = next(
+                    worker
+                    for worker in reversed(app.workers)
+                    if worker.group == "tasks"
+                )
                 release.set()
-                await asyncio.sleep(0.2)
+                self.assertTrue(await asyncio.to_thread(completed.wait, 2))
+                await asyncio.gather(tasks_worker.wait(), return_exceptions=True)
 
                 self.assertEqual(tui.contest_ref(app.current_contest or {}), ("other", "second"))
                 self.assertIsNone(app.current_task)
