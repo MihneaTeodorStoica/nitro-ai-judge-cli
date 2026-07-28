@@ -464,6 +464,119 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
                     str(app.query_one("#status-line", Static).content),
                 )
 
+    async def test_dynamic_static_content_is_rendered_literally(self) -> None:
+        marker = "value [/bad] remains literal"
+        with self.auth_patches():
+            app = tui.NitroTUI()
+            async with app.run_test(size=(100, 24)) as pilot:
+                await pilot.pause()
+                app.set_status(marker, "error")
+                app.query_one("#submission-detail", Static).update(marker)
+                app.query_one("#play-content", Static).update(marker)
+                app.push_screen(tui.ConfirmScreen(marker))
+                await pilot.pause()
+                self.assertIn(
+                    marker,
+                    str(app.screen.query_one("#confirm-message", Static).content),
+                )
+                await pilot.press("escape")
+                self.assertIn(marker, str(app.query_one("#status-line", Static).content))
+                self.assertIn(marker, str(app.query_one("#submission-detail", Static).content))
+                self.assertIn(marker, str(app.query_one("#play-content", Static).content))
+
+                app.push_screen(tui.LoginScreen())
+                await pilot.pause()
+                app.screen.query_one("#login-error", Static).update(marker)
+                await pilot.pause()
+                self.assertIn(
+                    marker,
+                    str(app.screen.query_one("#login-error", Static).content),
+                )
+                await pilot.press("escape")
+
+    async def test_contest_change_invalidates_delayed_task_and_descendants(self) -> None:
+        self.cache_selection()
+        started = threading.Event()
+        release = threading.Event()
+
+        def delayed_task(
+            _cookies: tuple[str, str],
+            _bearer: str,
+            _org: str,
+            _comp: str,
+            _task_id: str,
+        ) -> dict:
+            started.set()
+            self.assertTrue(release.wait(2))
+            return {"task": {**TASKS[0], "statement": "stale"}}
+
+        with (
+            self.auth_patches(contests=[CONTEST, OTHER_CONTEST], tasks=TASKS),
+            patch.object(tui, "load_task_view", side_effect=delayed_task),
+        ):
+            app = tui.NitroTUI()
+            async with app.run_test(size=(110, 30)) as pilot:
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+                app.categories = ["old-category"]
+                app.submissions = [{"id": "old-submission"}]
+                app.play_snapshot = {"workspace_state": "running"}
+                app.open_contest(OTHER_CONTEST)
+                release.set()
+                await asyncio.sleep(0.2)
+
+                self.assertEqual(tui.contest_ref(app.current_contest or {}), ("other", "second"))
+                self.assertIsNone(app.current_task)
+                self.assertEqual(app.categories, [])
+                self.assertEqual(app.submissions, [])
+                self.assertEqual(app.play_snapshot, {})
+                self.assertNotIn(
+                    "open", [action for action, _label in tui.PlayMenu().actions]
+                )
+
+    async def test_upload_completion_stays_bound_to_originating_task(self) -> None:
+        self.cache_selection()
+        started = threading.Event()
+        release = threading.Event()
+
+        def delayed_submit(*_args: object, **_kwargs: object) -> dict:
+            started.set()
+            self.assertTrue(release.wait(2))
+            return {"submissionID": "from-task-7"}
+
+        with (
+            self.auth_patches(contests=[CONTEST], tasks=TASKS),
+            patch.object(tui, "create_submission", side_effect=delayed_submit),
+            patch.object(tui, "load_submission") as load_submission,
+        ):
+            app = tui.NitroTUI()
+            async with app.run_test(size=(110, 30)) as pilot:
+                await pilot.pause(0.2)
+                await pilot.press("s")
+                await pilot.pause()
+                app.screen.query_one("#submit-output", Input).value = "answer.csv"
+                await pilot.press("enter", "enter", "enter")
+                self.assertTrue(await asyncio.to_thread(started.wait, 2))
+
+                status_messages: list[str] = []
+                original_set_status = app.set_status
+
+                def record_status(message: str, kind: str = "") -> None:
+                    status_messages.append(message)
+                    original_set_status(message, kind)
+
+                app.set_status = record_status  # type: ignore[method-assign]
+                app.open_task(TASKS[1])
+                release.set()
+                await pilot.pause(0.2)
+
+                self.assertEqual(app.current_task["id"], "backend-9")
+                self.assertIsNone(app.current_submission)
+                load_submission.assert_not_called()
+                self.assertTrue(
+                    any("selection changed" in message for message in status_messages),
+                    status_messages,
+                )
+
     async def test_mouse_selection_augments_the_keyboard_flow(self) -> None:
         state.update_cache("contests", "all", [CONTEST, OTHER_CONTEST])
         with self.auth_patches(
