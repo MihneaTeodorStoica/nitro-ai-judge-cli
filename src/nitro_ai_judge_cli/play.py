@@ -596,7 +596,7 @@ def cmd_play(args: argparse.Namespace) -> int:
 
 
 def normalize_play_argv(argv: list[str]) -> list[str]:
-    if not argv or argv[0] not in PLAY_ACTIONS:
+    if not argv or argv[0] not in (*PLAY_ACTIONS, "-h", "--help"):
         return ["play", *argv]
     return list(argv)
 
@@ -691,8 +691,16 @@ def populate_play_actions(actions: argparse._SubParsersAction) -> None:
         command.add_argument("--tls-key")
         command.add_argument("--public-url")
         command.add_argument("--yes", action="store_true", help="Approve non-interactively")
-    for name in ("status", "open", "start", "stop", "restart", "uninstall", "sync-credentials"):
-        manager_actions.add_parser(name)
+    for name, help_text in (
+        ("status", "Show manager status"),
+        ("open", "Open the manager dashboard"),
+        ("start", "Start the manager"),
+        ("stop", "Stop the manager"),
+        ("restart", "Restart the manager"),
+        ("uninstall", "Uninstall the manager"),
+        ("sync-credentials", "Synchronize saved credentials"),
+    ):
+        manager_actions.add_parser(name, help=help_text)
     purge = manager_actions.add_parser("purge", help="Remove manager-private SQLite state")
     purge.add_argument("--force", action="store_true", required=True)
 

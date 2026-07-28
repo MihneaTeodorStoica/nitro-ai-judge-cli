@@ -94,6 +94,7 @@ class PlayProtocolTests(unittest.TestCase):
     def test_default_action_is_play_and_manager_is_preserved(self) -> None:
         self.assertEqual(play.normalize_play_argv([]), ["play"])
         self.assertEqual(play.normalize_play_argv(["org/contest"]), ["play", "org/contest"])
+        self.assertEqual(play.normalize_play_argv(["--help"]), ["--help"])
         self.assertEqual(play.normalize_play_argv(["manager", "status"]), ["manager", "status"])
 
 
@@ -427,6 +428,32 @@ class PlayCommandTests(unittest.TestCase):
             parser.parse_args(["play", "--help"])
         self.assertEqual(shown.exception.code, 0)
         self.assertIn("cancel", help_output.getvalue())
+
+    def test_play_help_routes_and_manager_descriptions(self) -> None:
+        def show_help(argv: list[str]) -> str:
+            output = io.StringIO()
+            with redirect_stdout(output), self.assertRaises(SystemExit) as shown:
+                cli.main(argv)
+            self.assertEqual(shown.exception.code, 0)
+            return output.getvalue()
+
+        overview = show_help(["play", "--help"])
+        action = show_help(["play", "play", "--help"])
+        manager = show_help(["play", "manager", "--help"])
+
+        self.assertEqual(overview.splitlines()[0], "usage: naij play [-h] ACTION ...")
+        self.assertTrue(action.startswith("usage: naij play play [-h]"))
+        self.assertEqual(manager.splitlines()[0], "usage: naij play manager [-h] ACTION ...")
+        for description in (
+            "Show manager status",
+            "Open the manager dashboard",
+            "Start the manager",
+            "Stop the manager",
+            "Restart the manager",
+            "Uninstall the manager",
+            "Synchronize saved credentials",
+        ):
+            self.assertIn(description, manager)
 
     def test_cancel_defaults_to_selected_contest(self) -> None:
         context = {
