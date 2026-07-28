@@ -13,6 +13,7 @@ DEFAULT_API_BASE_URL = f"{BASE_URL}/api"
 TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
 DEFAULT_PAGE_SIZE = 20
 DEFAULT_SUBMISSION_PAGE_SIZE = 10
+MAX_PAGINATION_PAGES = 1_000
 TASK_FILE_CATEGORIES = {
     "statement": "Statement",
     "train_data": "Train data",

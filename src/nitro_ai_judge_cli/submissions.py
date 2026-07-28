@@ -9,7 +9,7 @@ from typing import Any
 
 from . import config
 from .api import api_request_text, body_json, build_multipart, error_preview, parse_singlefetch, request_text
-from .config import DEFAULT_SUBMISSION_PAGE_SIZE
+from .config import DEFAULT_SUBMISSION_PAGE_SIZE, MAX_PAGINATION_PAGES
 from .state import load_state, update_cache
 from .ui import format_datetime_ms
 
@@ -263,13 +263,22 @@ def load_submissions(
         if api_page is not None:
             items, last_page = api_page
             all_items = list(items)
-            for next_page in range(2, last_page + 1):
+            if not items:
+                return all_items, min(last_page, MAX_PAGINATION_PAGES)
+            seen_pages = {repr(items)}
+            for next_page in range(
+                2, min(last_page, MAX_PAGINATION_PAGES) + 1
+            ):
                 next_api_page = fetch_api_page(next_page)
                 if next_api_page is None:
                     break
                 page_items, _ = next_api_page
+                signature = repr(page_items)
+                if not page_items or signature in seen_pages:
+                    break
                 all_items.extend(page_items)
-            return all_items, last_page
+                seen_pages.add(signature)
+            return all_items, min(last_page, MAX_PAGINATION_PAGES)
 
     def fetch_page(target_page: int) -> tuple[list[dict[str, Any]], int]:
         status, body, _ = request_text(
@@ -301,10 +310,17 @@ def load_submissions(
 
     items, last_page = fetch_page(1)
     all_items = list(items)
-    for next_page in range(2, last_page + 1):
+    if not items:
+        return all_items, min(last_page, MAX_PAGINATION_PAGES)
+    seen_pages = {repr(items)}
+    for next_page in range(2, min(last_page, MAX_PAGINATION_PAGES) + 1):
         page_items, _ = fetch_page(next_page)
+        signature = repr(page_items)
+        if not page_items or signature in seen_pages:
+            break
         all_items.extend(page_items)
-    return all_items, last_page
+        seen_pages.add(signature)
+    return all_items, min(last_page, MAX_PAGINATION_PAGES)
 
 def submission_score(submission: dict[str, Any], mode: str) -> str:
     key = "completeTaskScore" if mode == "complete" else "partialTaskScore"
