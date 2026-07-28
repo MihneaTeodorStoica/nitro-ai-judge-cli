@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - host-only installs intentionally omit 
 
 if web is not None:
     from nitro_ai_judge_cli.manager.app import (
+        SESSION_COOKIE,
         _competition_sort_key,
         _docker_event_competitions,
         _new_session,
@@ -146,6 +147,18 @@ class ManagerBackendModelTests(unittest.TestCase):
         self.assertEqual(
             notebook["environment"]["PROXY_URL_CLIENT"],
             "/nitro/competitions/org/contest/proxy/",
+        )
+        self.assertEqual(
+            notebook["environment"]["JUPYTER_CONFIG_PATH"],
+            "/etc/naij-jupyter",
+        )
+        self.assertIn(
+            "naij-play-org-contest-jupyter-config:/etc/naij-jupyter:ro",
+            notebook["volumes"],
+        )
+        self.assertNotIn(
+            "naij-play-org-contest-jupyter-config:/home/jovyan/.jupyter:ro",
+            notebook["volumes"],
         )
         self.assertEqual(
             notebook["command"], ["/nitro/competitions/org/contest/jupyter/"]
@@ -338,6 +351,57 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
             )
         self.backend._rollback_legacy.assert_awaited_once_with(
             "org", "contest", context
+        )
+    async def test_start_retries_read_only_jupyter_home_mount_migration(self) -> None:
+        compose = self.backend._compose(
+            "org", "contest", gpu=False, pull_policy="never"
+        )
+        notebook = compose["services"]["jupyter-server"]
+        notebook["volumes"][1] = (
+            "naij-play-org-contest-jupyter-config:/home/jovyan/.jupyter:ro"
+        )
+        notebook["environment"].pop("JUPYTER_CONFIG_PATH")
+        self.backend._atomic_compose(
+            self.backend.compose_path("org", "contest"), compose
+        )
+        self.backend.run = AsyncMock(
+            side_effect=WireError("operation_failed", "compose failed")
+        )
+        self.backend._wait_services_with_proxy_fallback = AsyncMock()
+        self.backend.inspect_competition = AsyncMock(return_value={})
+
+        with self.assertRaisesRegex(WireError, "compose failed"):
+            await self.backend.perform("org", "contest", "start", {}, AsyncMock())
+        with open(
+            self.backend.compose_path("org", "contest"), encoding="utf-8"
+        ) as stream:
+            failed_notebook = json.load(stream)["services"]["jupyter-server"]
+        self.assertNotIn("JUPYTER_CONFIG_PATH", failed_notebook["environment"])
+        self.assertIn(
+            "naij-play-org-contest-jupyter-config:/home/jovyan/.jupyter:ro",
+            failed_notebook["volumes"],
+        )
+
+        self.backend.run = AsyncMock(return_value=(0, "", ""))
+        await self.backend.perform("org", "contest", "start", {}, AsyncMock())
+
+        with open(
+            self.backend.compose_path("org", "contest"), encoding="utf-8"
+        ) as stream:
+            notebook = json.load(stream)["services"]["jupyter-server"]
+        self.assertEqual(
+            notebook["environment"]["JUPYTER_CONFIG_PATH"],
+            "/etc/naij-jupyter",
+        )
+        self.assertIn(
+            "naij-play-org-contest-jupyter-config:/etc/naij-jupyter:ro",
+            notebook["volumes"],
+        )
+        self.backend.run.assert_awaited_once_with(
+            self.backend.compose_command(
+                "org", "contest", "up", "-d", "--force-recreate"
+            ),
+            timeout=180,
         )
 
     async def test_ready_is_workspace_only_and_stopped_requires_containers(self) -> None:
@@ -1670,6 +1734,11 @@ class ManagerRouteTests(unittest.IsolatedAsyncioTestCase):
         await lan.start_server()
         try:
             headers = {"Host": "play.example:51123"}
+            competition = await lan.post(
+                "/nitro/competitions/org/contest/jupyter/api/sessions",
+                headers={**headers, "Origin": "https://play.example:51123"},
+            )
+            self.assertEqual(competition.status, 401)
             page = await lan.get("/nitro/", headers=headers)
             self.assertIn("Protected network dashboard", await page.text())
             denied = await lan.post(
@@ -1791,6 +1860,7 @@ class ManagerProxyTests(unittest.IsolatedAsyncioTestCase):
             public_url="http://localhost:51123",
             lan=False,
         )
+        self.app = app
         self.client = TestClient(TestServer(app))
         await self.client.start_server()
         self.headers = {"Host": "localhost:51123", "Authorization": "Bearer secret"}
@@ -1881,6 +1951,30 @@ class ManagerProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(value["csrf"])
         self.assertEqual(value["cookie"], "competition=safe")
         await socket.close()
+
+    async def test_local_jupyter_post_survives_manager_session_restart(self) -> None:
+        stale, _ = _new_session(self.app)
+        self.app["sessions"].clear()
+        response = await self.client.post(
+            "/nitro/competitions/org/contest/jupyter/api/sessions",
+            headers={
+                "Host": "localhost:51123",
+                "Origin": "http://localhost:51123",
+                "Cookie": f"{SESSION_COOKIE}={stale}",
+            },
+        )
+        self.assertEqual(response.status, 200)
+        self.assertIsNone((await response.json())["cookie"])
+
+        denied = await self.client.post(
+            "/nitro/competitions/org/contest/jupyter/api/sessions",
+            headers={
+                "Host": "localhost:51123",
+                "Origin": "https://attacker.example",
+                "Cookie": f"{SESSION_COOKIE}={stale}",
+            },
+        )
+        self.assertEqual(denied.status, 403)
 
 
 if __name__ == "__main__":

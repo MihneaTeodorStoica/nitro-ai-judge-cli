@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import re
@@ -28,6 +29,7 @@ Progress = Callable[[str, str], Awaitable[None]]
 DockerEvent = Callable[[dict[str, Any]], Awaitable[None]]
 LABEL_PREFIX = "org.nitro-ai.naij.play"
 SHARED_NETWORK = "naij-play"
+JUPYTER_CONFIG_DIR = "/etc/naij-jupyter"
 PULL_PROGRESS_INTERVAL = 1
 # Nitro publishes no designated default; its generic test pair matches a real contest pair.
 V3_0_2_FALLBACK_IMAGES = (
@@ -508,9 +510,10 @@ class DockerBackend:
             "command": [base_path],
             "volumes": [
                 f"{workspace_name}:/home/jovyan",
-                f"{names['config']}:/home/jovyan/.jupyter:ro",
+                f"{names['config']}:{JUPYTER_CONFIG_DIR}:ro",
             ],
             "environment": {
+                "JUPYTER_CONFIG_PATH": JUPYTER_CONFIG_DIR,
                 "PROXY_URL": "http://submission-proxy:9000",
                 "NITRO_SUBMISSION_PROXY_URL": "http://submission-proxy:9000",
                 "PROXY_URL_CLIENT": proxy_path,
@@ -574,6 +577,24 @@ class DockerBackend:
                 names["config"]: {"external": True, "name": names["config"]},
             },
         }
+
+    def _migrate_jupyter_config_mount(
+        self, org: str, competition: str
+    ) -> dict[str, Any] | None:
+        path = self.compose_path(org, competition)
+        with open(path, encoding="utf-8") as stream:
+            compose = json.load(stream)
+        notebook = compose["services"]["jupyter-server"]
+        old_mount = f"{self.names(org, competition)['config']}:/home/jovyan/.jupyter:ro"
+        if old_mount not in notebook["volumes"]:
+            return None
+        original = copy.deepcopy(compose)
+        notebook["volumes"][notebook["volumes"].index(old_mount)] = (
+            f"{self.names(org, competition)['config']}:{JUPYTER_CONFIG_DIR}:ro"
+        )
+        notebook["environment"]["JUPYTER_CONFIG_PATH"] = JUPYTER_CONFIG_DIR
+        self._atomic_compose(path, compose)
+        return original
 
     async def _prepare_legacy(
         self,
@@ -1184,7 +1205,22 @@ class DockerBackend:
             )
         if action in {"start", "stop", "restart"}:
             await progress("applying", f"{action.capitalize()}ing competition services")
-            await self.run(self.compose_command(org, competition, action), timeout=180)
+            original_compose = (
+                self._migrate_jupyter_config_mount(org, competition)
+                if action != "stop"
+                else None
+            )
+            command = (
+                self.compose_command(org, competition, "up", "-d", "--force-recreate")
+                if original_compose is not None
+                else self.compose_command(org, competition, action)
+            )
+            try:
+                await self.run(command, timeout=180)
+            except (Exception, asyncio.CancelledError):
+                if original_compose is not None:
+                    self._atomic_compose(compose_path, original_compose)
+                raise
             if action in {"start", "restart"}:
                 await progress("verifying", "Checking Jupyter and submission proxy routes")
                 await self._wait_services_with_proxy_fallback(

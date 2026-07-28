@@ -131,23 +131,18 @@ async def security_middleware(request: web.Request, handler: Any) -> web.StreamR
         else:
             session_id = request.cookies.get(SESSION_COOKIE, "")
             session = _browser_session(app, session_id)
-            if not session:
-                direct_loopback_open = (
-                    not app["lan"]
-                    and request.method == "GET"
-                    and path.startswith(f"{BASE_PATH}/competitions/")
-                    and request.headers.get("Upgrade", "").lower() != "websocket"
+            local_competition = not app["lan"] and path.startswith(
+                f"{BASE_PATH}/competitions/"
+            )
+            if not session and not local_competition:
+                raise WireError(
+                    ErrorType.AUTHENTICATION_REQUIRED.value,
+                    "Play manager authentication required",
+                    status=401,
                 )
-                if not direct_loopback_open:
-                    raise WireError(
-                        ErrorType.AUTHENTICATION_REQUIRED.value,
-                        "Play manager authentication required",
-                        status=401,
-                    )
-                session_id, session = _new_session(app)
-                request["new_session_id"] = session_id
             request["auth_kind"] = "browser"
-            request["browser_session"] = session
+            if session:
+                request["browser_session"] = session
             browser_mutation = request.method not in {"GET", "HEAD", "OPTIONS"}
             browser_websocket = request.headers.get("Upgrade", "").lower() == "websocket"
             if browser_mutation or browser_websocket:
@@ -176,17 +171,6 @@ async def security_middleware(request: web.Request, handler: Any) -> web.StreamR
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
-    new_session_id = request.get("new_session_id")
-    if new_session_id:
-        response.set_cookie(
-            SESSION_COOKIE,
-            new_session_id,
-            httponly=True,
-            secure=app["public_origin"].startswith("https://"),
-            samesite="Strict",
-            path=f"{BASE_PATH}/",
-            max_age=12 * 3600,
-        )
     return response
 
 
