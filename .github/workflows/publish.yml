@@ -105,7 +105,7 @@ jobs:
       - name: Smoke Docker, Compose, Python, entrypoint, and health under QEMU
         shell: bash
         run: |
-          docker run --rm --platform linux/arm64 --entrypoint docker naij-play-manager:arm64-ci version
+          docker run --rm --platform linux/arm64 --entrypoint docker naij-play-manager:arm64-ci --version
           docker run --rm --platform linux/arm64 --entrypoint docker naij-play-manager:arm64-ci compose version
           docker run --rm --platform linux/arm64 --entrypoint python naij-play-manager:arm64-ci -c "import aiohttp, nitro_ai_judge_cli.manager"
           docker run -d --platform linux/arm64 --name naij-manager-arm64 -p 51123:51123 naij-play-manager:arm64-ci
