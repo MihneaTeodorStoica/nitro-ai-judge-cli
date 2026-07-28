@@ -1189,13 +1189,17 @@ class DockerBackend:
                     stage="validating",
                     status=409,
                 )
-            image_candidates = tuple(
-                dict.fromkeys((*self.image_names(org, competition), *FALLBACK_IMAGES))
-            )
-            for image in image_candidates:
+            primary_images = self.image_names(org, competition)
+            for image in primary_images:
                 if await self._image_present(image):
                     await progress("applying", f"Removing image tag {image}")
                     await self.run(["docker", "image", "rm", image], timeout=60)
+            if os.path.isfile(compose_path):
+                with open(compose_path, encoding="utf-8") as stream:
+                    compose = json.load(stream)
+                compose["services"]["jupyter-server"]["image"] = primary_images[0]
+                compose["services"]["submission-proxy"]["image"] = primary_images[1]
+                self._atomic_compose(compose_path, compose)
             return await self.inspect_competition(org, competition)
         if not os.path.isfile(compose_path) or self._saved_workspace(
             org, competition

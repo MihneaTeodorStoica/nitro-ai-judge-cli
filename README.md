@@ -297,8 +297,9 @@ Lifecycle behavior:
 - Explicit `stop` remains stopped until the user starts or recreates it.
 - `delete-container` removes containers and the private project network but
   preserves `/home/jovyan`.
-- `delete-image` removes only that competition's cached image tags after its
-  containers are deleted; workspace data is preserved.
+- `delete-image` removes that competition's cached image tags and clears its
+  fallback selection after containers are deleted; shared fallback images and
+  workspace data are preserved.
 - `delete-workspace` requires the full `organization/competition` reference in
   interactive use. Automation must pass `--force`.
 - `logs` is redacted before it leaves the manager; `logs --follow` streams it.
@@ -496,7 +497,7 @@ python3 -m twine check dist/*
 docker build -f manager/Dockerfile -t naij-play-manager:dev .
 NAIJ_DOCKER_INTEGRATION=1 NAIJ_PLAY_MANAGER_IMAGE=naij-play-manager:dev \
   python3 -m unittest discover -s tests/integration -v
-git tag v3.1.1
+git tag v3.1.2
 git push origin main --tags
 ```
 

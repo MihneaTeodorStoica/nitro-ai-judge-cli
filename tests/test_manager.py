@@ -568,13 +568,13 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
             )
         self.backend._pull_image.assert_not_awaited()
 
-    async def test_delete_image_removes_only_scoped_tags(self) -> None:
+    async def test_delete_image_clears_fallback_selection(self) -> None:
         primary = tuple(self.backend.image_names("org", "contest"))
         image_candidates = tuple(dict.fromkeys((*primary, *FALLBACK_IMAGES)))
         self.backend._atomic_compose(
             self.backend.compose_path("org", "contest"),
             self.backend._compose(
-                "org", "contest", gpu=False, pull_policy="never", images=primary
+                "org", "contest", gpu=False, pull_policy="never", images=FALLBACK_IMAGES
             ),
         )
         removed_images: set[str] = set()
@@ -599,7 +599,7 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
             command for command in commands if command[:3] == ["docker", "image", "rm"]
         ]
         self.assertEqual(
-            removed, [["docker", "image", "rm", image] for image in image_candidates]
+            removed, [["docker", "image", "rm", image] for image in primary]
         )
         self.assertTrue(all("--force" not in command for command in removed))
         self.assertFalse(
@@ -607,6 +607,10 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["image_state"], "missing")
         self.assertFalse(result.get("image_fallback"))
+        self.assertEqual(
+            self.backend._saved_images("org", "contest"), primary
+        )
+
     async def test_delete_workspace_preserves_image_metadata(self) -> None:
         workspace_name = self.backend.names("org", "contest")["workspace"]
         self.backend._atomic_compose(
