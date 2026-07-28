@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from types import SimpleNamespace
@@ -632,6 +633,17 @@ class ManagerConfigurationTests(unittest.TestCase):
 
 
 class ManagerClientTests(unittest.TestCase):
+    def test_wait_operation_honors_local_stop_without_remote_cancel(self) -> None:
+        client = ManagerClient("http://localhost", "token")
+        stop_event = threading.Event()
+        stop_event.set()
+        with (
+            patch.object(client, "operation") as operation,
+            self.assertRaises(InterruptedError),
+        ):
+            client.wait_operation("operation", stop_event=stop_event)
+        operation.assert_not_called()
+
     def test_follow_logs_decodes_ndjson_to_plain_lines(self) -> None:
         class Response(list):
             def __enter__(self):
