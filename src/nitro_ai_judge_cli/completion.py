@@ -21,7 +21,7 @@ SHELL_COMMANDS = (
 GLOBAL_OPTIONS = ("--api-url", "--submission-proxy", "--state-dir", "--help")
 PLAY_ACTIONS = (
     "play", "pull", "start", "stop", "restart", "recreate",
-    "delete-container", "delete-image", "delete-workspace", "logs", "status", "cancel", "open", "manager",
+    "delete-container", "delete-image", "delete-workspace", "logs", "status", "ps", "cancel", "open", "manager",
 )
 MANAGER_ACTIONS = (
     "install", "update", "status", "open", "start", "stop", "restart",
@@ -72,6 +72,7 @@ PLAY_OPTION_GROUPS = {
     "delete-container": (("--yes",), ("--help",)),
     "delete-image": (("--yes",), ("--help",)),
     "status": (("--yes",), ("--help",)),
+    "ps": (("--yes",), ("--help",)),
     "cancel": (("--yes",), ("--help",)),
     "open": (("--yes",), ("--help",)),
     "manager-install": (
@@ -360,6 +361,8 @@ def _task_entities(
         explicit = _contest_ref(positionals[0], context)
         if explicit and len(positionals) == 1:
             return [("tasks", explicit)]
+        if len(positionals) == 2 and all("/" not in item for item in positionals):
+            return [("tasks", (positionals[0], positionals[1]))]
         return None
     if prefix:
         result: list[tuple[str, tuple[str, ...] | None]] = []
@@ -553,7 +556,7 @@ def candidates(
     if command == "completion":
         if _positionals(command, arguments):
             return _remaining_options(command, arguments, prefix)
-        return _matches(("zsh", "bash", "fish"), prefix)
+        return _matches(("zsh", "bash", "fish", "powershell"), prefix)
 
     if command == "play":
         positionals = _positionals(command, arguments)
@@ -643,4 +646,33 @@ end
 complete -c naij -f -a '(__naij_complete)'
 complete -c nitro-cli -f -a '(__naij_complete)'
 """
+    if shell == "powershell":
+        return r'''Register-ArgumentCompleter -Native -CommandName naij,nitro-cli -ScriptBlock {
+  param($wordToComplete, $commandAst, $cursorPosition)
+  $words = @(
+    $commandAst.CommandElements | Select-Object -Skip 1 | ForEach-Object {
+      if ($_ -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+        $_.Value
+      } else {
+        $_.Extent.Text
+      }
+    }
+  )
+  if ($wordToComplete -and $words.Count) {
+    $words = @($words | Select-Object -SkipLast 1)
+  }
+  $words += $wordToComplete
+  naij __complete -- @words | ForEach-Object {
+    $candidate = $_
+    $completion = if ($candidate -match "[\s'\"]") {
+      "'" + $candidate.Replace("'", "''") + "'"
+    } else {
+      $candidate
+    }
+    [System.Management.Automation.CompletionResult]::new(
+      $completion, $candidate, 'ParameterValue', $candidate
+    )
+  }
+}
+'''
     raise ValueError(f"unsupported shell: {shell}")

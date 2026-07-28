@@ -324,7 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("show", help="Show the selected item")
 
     completion = sub.add_parser("completion", help="Generate native shell completion")
-    completion.add_argument("shell", choices=("zsh", "bash", "fish"))
+    completion.add_argument("shell", choices=("zsh", "bash", "fish", "powershell"))
 
     internal = sub.add_parser("__complete", add_help=False)
     internal.add_argument("words", nargs=argparse.REMAINDER)
@@ -499,8 +499,16 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if "__complete" not in argv and "play" in argv:
-        index = argv.index("play")
+    index = 0
+    while index < len(argv):
+        option = argv[index].split("=", 1)[0]
+        if option in {"--submission-proxy"}:
+            index += 1
+        elif option in {"--api-url", "--state-dir"}:
+            index += 1 if "=" in argv[index] else 2
+        else:
+            break
+    if index < len(argv) and argv[index] == "play":
         argv = [*argv[: index + 1], *normalize_play_argv(argv[index + 1 :])]
     parser = build_parser()
     args = parser.parse_args(argv)
