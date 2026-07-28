@@ -298,6 +298,9 @@ class PlayCommandTests(unittest.TestCase):
             ("stop", False),
         ):
             args = cli.build_parser().parse_args(["play", "manager", action])
+            output = io.StringIO()
+            spinner = Mock()
+            spinner.start.return_value = spinner
             with (
                 self.subTest(action=action, migrates=migrates),
                 patch.object(
@@ -306,7 +309,8 @@ class PlayCommandTests(unittest.TestCase):
                 patch.object(play, "load_manager_config", return_value={"image": "saved"}),
                 patch.object(play, "manager_container_exists", return_value=True),
                 patch.object(play, "manager_compose_action") as compose_action,
-                redirect_stdout(io.StringIO()),
+                patch.object(play, "Spinner", return_value=spinner) as spinner_class,
+                redirect_stdout(output),
             ):
                 self.assertEqual(play.cmd_manager(args), 0)
             if action == "stop":
@@ -315,8 +319,13 @@ class PlayCommandTests(unittest.TestCase):
                 migrate.assert_called_once_with()
             if migrates:
                 compose_action.assert_not_called()
+                spinner_class.assert_not_called()
             else:
                 compose_action.assert_called_once_with(action)
+                spinner_class.assert_called_once_with(
+                    play.MANAGER_ACTION_LABELS[action], stream=output
+                )
+                spinner.stop.assert_called_once_with()
 
     def test_long_action_is_polled_and_returns_snapshot(self) -> None:
         client = FakeClient()
