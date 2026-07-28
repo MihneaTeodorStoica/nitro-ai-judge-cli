@@ -12,7 +12,7 @@ from .state import load_context, selected_contest, selected_submission, selected
 COMMANDS = (
     "login", "logout", "tui", "contests", "tasks", "task", "download-data", "play", "submit",
     "submissions", "submission", "set-final", "unset-final", "use", "ls",
-    "show", "completion",
+    "show", "cache", "completion",
 )
 SHELL_COMMANDS = (
     "help", "cd", "pwd", "l", "h", "?", "q", "quit", "exit", "..",
@@ -55,6 +55,9 @@ OPTION_GROUPS = {
     "set-final": (("--help",),),
     "unset-final": (("--help",),),
     "use": (("--clear",), ("--help",)),
+    "ls": (("--offline",), ("--help",)),
+    "show": (("--offline",), ("--help",)),
+    "cache": (("--help",),),
     "completion": (("--help",),),
 }
 PLAY_OPTION_GROUPS = {
@@ -563,6 +566,14 @@ def candidates(
         if _positionals(command, arguments):
             return _remaining_options(command, arguments, prefix)
         return _matches(("zsh", "bash", "fish", "powershell"), prefix)
+
+    if command == "cache":
+        positionals = _positionals(command, arguments)
+        if not positionals:
+            return _matches(("status", "clear"), prefix)
+        if positionals[0] == "clear" and len(positionals) == 1:
+            return _matches(("contests", "tasks", "submissions", "all"), prefix)
+        return _remaining_options(command, arguments, prefix)
 
     if command == "play":
         positionals = _positionals(command, arguments)

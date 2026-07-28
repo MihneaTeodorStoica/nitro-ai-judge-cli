@@ -22,6 +22,8 @@ from .contests import (
     find_task,
     load_tasks,
     print_competitions,
+    print_task,
+    print_tasks,
     task_number,
 )
 from .play import (
@@ -35,6 +37,7 @@ from .shell import run_shell
 from .state import (
     CredentialsError,
     clear_credentials,
+    clear_cache,
     clear_context,
     configure_state_dir,
     load_context,
@@ -54,6 +57,8 @@ from .submissions import (
     cmd_submissions,
     cmd_submit,
     get_username,
+    print_submission_details,
+    print_submissions,
 )
 
 
@@ -246,6 +251,180 @@ def _cmd_use(args: argparse.Namespace) -> int:
     return _show_context(load_context())
 
 
+def _cache_entry(
+    context: dict[str, Any], kind: str, key: str
+) -> list[dict[str, Any]] | None:
+    cache = context.get("cache")
+    bucket = cache.get(kind) if isinstance(cache, dict) else None
+    if not isinstance(bucket, dict) or key not in bucket:
+        return None
+    items = bucket[key]
+    if not isinstance(items, list):
+        return None
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _offline_error(message: str, command: str) -> int:
+    print(f"Error: {message}; run `{command}` without --offline to refresh.")
+    return 1
+
+
+def _dispatch_offline(args: argparse.Namespace) -> int:
+    context = load_context()
+    contest = selected_contest(context)
+    task_id = selected_task(context)
+    submission_id = selected_submission(context)
+
+    if args.cmd == "ls":
+        if not contest:
+            items = _cache_entry(context, "contests", "featured")
+            if items is None:
+                items = _cache_entry(context, "contests", "all")
+            if items is None:
+                return _offline_error("no cached competitions are available", "naij ls")
+            print("[cached; freshness unavailable]")
+            if items:
+                print_competitions(items)
+            else:
+                print("No competitions found")
+            return 0
+        if task_id is None:
+            items = _cache_entry(context, "tasks", f"{contest[0]}/{contest[1]}")
+            if items is None:
+                return _offline_error(
+                    f"no cached tasks are available for {contest[0]}/{contest[1]}",
+                    "naij ls",
+                )
+            print("[cached; freshness unavailable]")
+            print_tasks(items)
+            return 0
+        key = f"{contest[0]}/{contest[1]}/{task_id}"
+        items = _cache_entry(context, "submissions", key)
+        if items is None:
+            return _offline_error(
+                f"no cached submissions are available for {key}", "naij ls"
+            )
+        print("[cached; freshness unavailable]")
+        if not items:
+            print_submissions([], "partial")
+        for item in items:
+            mode = str(
+                item.get("_mode")
+                or ("complete" if "completeTaskScore" in item else "partial")
+            )
+            print_submissions([item], mode)
+        return 0
+
+    if not contest:
+        return _offline_error("no contest is selected", "naij use ORG/COMP")
+
+    if submission_id:
+        if task_id is None:
+            return _offline_error(
+                "the selected submission has no task context", "naij use"
+            )
+        key = f"{contest[0]}/{contest[1]}/{task_id}"
+        items = _cache_entry(context, "submissions", key)
+        submission = next(
+            (
+                item
+                for item in items or []
+                if str(item.get("id")) == submission_id
+            ),
+            None,
+        )
+        if submission is None:
+            return _offline_error(
+                f"submission {submission_id} is missing from the cached {key} list",
+                "naij show",
+            )
+        selected = context.get("submission")
+        if isinstance(selected, dict) and str(selected.get("id")) == submission_id:
+            submission = {**submission, **selected}
+        print("[cached; freshness unavailable]")
+        print_submission_details(submission)
+        return 0
+
+    if task_id is not None:
+        items = _cache_entry(context, "tasks", f"{contest[0]}/{contest[1]}")
+        task = next(
+            (item for item in items or [] if str(item.get("id")) == task_id), None
+        )
+        if task is None:
+            return _offline_error(
+                f"task {task_id} is missing from the cached task list", "naij show"
+            )
+        selected = context.get("task")
+        if isinstance(selected, dict) and str(selected.get("id")) == task_id:
+            task = {**task, **selected}
+        if "statement" not in task:
+            return _offline_error(
+                f"cached details for task {task_id} are incomplete", "naij show"
+            )
+        display_id = selected_task_number(context) or task_id
+        print("[cached; freshness unavailable]")
+        if display_id != task_id:
+            print(f"Task number: {display_id}")
+        print_task(task_id, task)
+        return 0
+
+    cache = context.get("cache")
+    bucket = cache.get("contests") if isinstance(cache, dict) else None
+    cached_contest = None
+    if isinstance(bucket, dict):
+        for values in bucket.values():
+            if not isinstance(values, list):
+                continue
+            cached_contest = next(
+                (
+                    item
+                    for item in values
+                    if isinstance(item, dict)
+                    and selected_contest({"contest": item}) == contest
+                ),
+                None,
+            )
+            if cached_contest is not None:
+                break
+    if cached_contest is None:
+        return _offline_error(
+            f"{contest[0]}/{contest[1]} is missing from the competition cache",
+            "naij show",
+        )
+    print("[cached; freshness unavailable]")
+    print_competitions([cached_contest])
+    return 0
+
+
+def _cmd_cache(args: argparse.Namespace) -> int:
+    if args.cache_action == "clear":
+        clear_cache(args.kind)
+        print(f"Cleared {args.kind} cache.")
+        return 0
+
+    cache = load_context().get("cache")
+    print("Cache status (freshness unavailable):")
+    found = False
+    if isinstance(cache, dict):
+        for kind, bucket in sorted(cache.items()):
+            if not isinstance(bucket, dict):
+                continue
+            if not bucket:
+                print(f"{kind}: 0 scopes, 0 records")
+                found = True
+            for scope, items in sorted(bucket.items()):
+                count = (
+                    len([item for item in items if isinstance(item, dict)])
+                    if isinstance(items, list)
+                    else 0
+                )
+                print(f"{kind}/{scope}: {count} records")
+                found = True
+    if not found:
+        print("(empty)")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="naij",
@@ -347,8 +526,23 @@ def build_parser() -> argparse.ArgumentParser:
     use.add_argument("selection", nargs="*")
     use.add_argument("--clear", action="store_true")
 
-    sub.add_parser("ls", help="List items at the selected context level")
-    sub.add_parser("show", help="Show the selected item")
+    listing = sub.add_parser("ls", help="List items at the selected context level")
+    listing.add_argument("--offline", action="store_true", help="Use cached data only")
+    show = sub.add_parser("show", help="Show the selected item")
+    show.add_argument("--offline", action="store_true", help="Use cached data only")
+
+    cache = sub.add_parser("cache", help="Inspect or clear cached data")
+    cache_actions = cache.add_subparsers(
+        dest="cache_action", required=True, metavar="ACTION"
+    )
+    cache_actions.add_parser("status", help="Show cached scopes and record counts")
+    cache_clear = cache_actions.add_parser("clear", help="Clear cached data")
+    cache_clear.add_argument(
+        "kind",
+        nargs="?",
+        choices=("contests", "tasks", "submissions", "all"),
+        default="all",
+    )
 
     completion = sub.add_parser("completion", help="Generate native shell completion")
     completion.add_argument("shell", choices=("zsh", "bash", "fish", "powershell"))
@@ -576,6 +770,10 @@ def main(argv: list[str] | None = None) -> int:
         if conflicts:
             print(f"Error: --list cannot be used with {', '.join(conflicts)}")
             return 1
+    if args.cmd == "cache":
+        return _cmd_cache(args)
+    if args.cmd in {"ls", "show"} and args.offline:
+        return _dispatch_offline(args)
     if not args.cmd:
         return run_shell(lambda words: main(words))
     if args.cmd == "login":

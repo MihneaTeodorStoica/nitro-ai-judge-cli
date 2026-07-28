@@ -401,8 +401,16 @@ class CompletionTests(unittest.TestCase):
         )
         self.assertEqual(
             completion.candidates(["c"], context, interactive=True),
-            ["cd", "completion", "contests"],
+            ["cache", "cd", "completion", "contests"],
         )
+
+    def test_cache_and_offline_completion(self) -> None:
+        context = self.context()
+        self.assertEqual(completion.candidates(["cache", ""], context), ["clear", "status"])
+        self.assertEqual(
+            completion.candidates(["cache", "clear", "t"], context), ["tasks"]
+        )
+        self.assertIn("--offline", completion.candidates(["ls", "-"], context))
 
     def test_use_resolves_the_current_argument_slot(self) -> None:
         context = self.context()
@@ -672,6 +680,21 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(loader.call_count, 2)
         self.assertNotIn("all", state.load_context().get("cache", {}).get("contests", {}))
+
+    def test_cleared_cache_is_refetched_by_completion(self) -> None:
+        state.save_context({"cache": {"contests": {"all": []}}})
+        state.clear_cache("contests")
+        competitions = [{"organizationSlug": "ceoai", "competitionSlug": "2026"}]
+        auth_state, fresh, auth = self.auth_patches()
+        with auth_state, fresh, auth, patch.object(
+            contests, "load_competitions", return_value=competitions
+        ) as loader:
+            self.assertEqual(
+                completion.candidates(["ceo"], interactive=True), ["ceoai/2026"]
+            )
+
+        loader.assert_called_once()
+        self.assertEqual(state.cached_items("contests", "all"), competitions)
 
     def test_explicit_contest_completion_fetches_only_its_tasks(self) -> None:
         tasks = [{"id": "vision"}]
