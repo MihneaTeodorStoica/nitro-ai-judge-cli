@@ -205,6 +205,7 @@ Submit options:
 - `-s`, `--source`: optional source file
 - `-n`, `--note`: submission note
 - `-w`, `--wait`: wait for judging feedback
+- `--wait-timeout`: maximum wait in seconds (default: 180)
 
 Submission-list options:
 
@@ -214,6 +215,8 @@ Submission-list options:
 - `-m`, `--mode`: `partial`, `complete`, or `both`
 
 Use `naij set-final [SUBMISSION]` and `naij unset-final [SUBMISSION]` to change the final selection. The submission argument may be omitted when one is selected in the interactive shell.
+
+Resume waiting after an interrupted submission with `naij submission [SUBMISSION] --wait`; the ID may be omitted when a submission is selected.
 
 ## Backend and submission proxy
 

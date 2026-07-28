@@ -42,13 +42,16 @@ OPTION_GROUPS = {
     ),
     "submit": (
         ("-o", "--output"), ("-s", "--source"), ("-n", "--note"),
-        ("-w", "--wait"), ("--help",),
+        ("-w", "--wait"), ("--wait-timeout",), ("--help",),
     ),
     "submissions": (
         ("-a", "--author"), ("-p", "--page"), ("-n", "--page-size"),
         ("-m", "--mode"), ("--help",),
     ),
-    "submission": (("--org",), ("--comp",), ("--task-id",), ("--help",)),
+    "submission": (
+        ("--org",), ("--comp",), ("--task-id",), ("-w", "--wait"),
+        ("--wait-timeout",), ("--help",),
+    ),
     "set-final": (("--help",),),
     "unset-final": (("--help",),),
     "use": (("--clear",), ("--help",)),
@@ -92,11 +95,14 @@ VALUE_OPTIONS = {
         "--port", "--bind", "--pull", "--wait-timeout", "--tail", "--image",
         "--tls-cert", "--tls-key", "--public-url",
     },
-    "submit": {"-o", "--output", "-s", "--source", "-n", "--note"},
+    "submit": {
+        "-o", "--output", "-s", "--source", "-n", "--note",
+        "--wait-timeout",
+    },
     "submissions": {
         "-a", "--author", "-p", "--page", "-n", "--page-size", "-m", "--mode",
     },
-    "submission": {"--org", "--comp", "--task-id"},
+    "submission": {"--org", "--comp", "--task-id", "--wait-timeout"},
 }
 REPEATABLE_OPTION_GROUPS = {"download-data": {"-c"}}
 
