@@ -29,6 +29,7 @@
   const paginations = [...document.querySelectorAll("[data-pagination]")];
   const dialog = document.querySelector("#delete-dialog");
   const confirmation = document.querySelector("#delete-confirmation");
+  const deleteConfirm = document.querySelector("#delete-confirm");
   const removeImageDialog = document.querySelector("#remove-image-dialog");
   const removeContainerDialog = document.querySelector("#remove-container-dialog");
   const loginDialog = document.querySelector("#nitro-login-dialog");
@@ -545,6 +546,7 @@
         state.deleteRef = reference;
         document.querySelector("#delete-reference").textContent = reference;
         confirmation.value = "";
+        deleteConfirm.disabled = true;
         document.querySelector("#delete-error").textContent = "";
         dialog.showModal();
         confirmation.focus();
@@ -560,6 +562,18 @@
       showAlert(error.message, action === "copy-link" ? () => copyJupyterLink(button, reference) : () => startAction(reference, action));
     } finally {
       button.disabled = false;
+    }
+  });
+
+  confirmation.addEventListener("input", () => {
+    deleteConfirm.disabled = confirmation.value !== state.deleteRef;
+  });
+
+  confirmation.addEventListener("keydown", event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (!deleteConfirm.disabled) {
+      document.querySelector("#delete-form").requestSubmit(deleteConfirm);
     }
   });
 
