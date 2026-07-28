@@ -7,6 +7,8 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import contextlib
+import io
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -225,6 +227,54 @@ class SubmissionTests(unittest.TestCase):
             },
         )
 
+    def test_submission_list_uses_nested_pagination_metadata(self) -> None:
+        pages: list[int] = []
+
+        def request(**kwargs: object) -> tuple[int, str, dict[str, str]]:
+            page = kwargs["params"]["page"]  # type: ignore[index]
+            pages.append(page)
+            return 200, json.dumps(
+                {
+                    "partialSubmissions": {
+                        "data": [{"id": f"p{page}"}],
+                        "lastPage": 2,
+                    }
+                }
+            ), {}
+
+        with patch.object(submissions, "api_request_text", side_effect=request):
+            items, last_page = submissions.load_submissions(
+                ("", ""),
+                "token",
+                "org",
+                "contest",
+                "7",
+                author=None,
+                page=None,
+                page_size=10,
+                mode="partial",
+            )
+
+        self.assertEqual(items, [{"id": "p1"}, {"id": "p2"}])
+        self.assertEqual(last_page, 2)
+        self.assertEqual(pages, [1, 2])
+
+    def test_short_subtask_arrays_render_missing_values(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            submissions.print_submission_details(
+                {
+                    "subtasks": [{"id": 1}, {"id": 2}],
+                    "partialSubtaskScores": [42],
+                    "partialSubtaskMetricValues": [0.5],
+                    "completeTaskScore": 42,
+                    "completeSubtaskScores": [42],
+                    "completeSubtaskMetricValues": [0.5],
+                }
+            )
+
+        self.assertIn("#2 partial None/? | complete None/?", output.getvalue())
+
     def test_polling_returns_first_non_pending_feedback(self) -> None:
         pending = {"id": "one", "state": "pending"}
         complete = {"id": "one", "state": "complete"}
@@ -261,6 +311,50 @@ class SubmissionTests(unittest.TestCase):
             )
         self.assertEqual(result, 1)
         self.assertIn("missing", output.call_args.args[0])
+
+    def test_submit_wait_accepts_canonical_id(self) -> None:
+        feedback = {"id": "canonical-123", "state": "complete"}
+        with (
+            patch.object(
+                submissions, "create_submission", return_value={"id": "canonical-123"}
+            ),
+            patch.object(
+                submissions, "poll_submission_feedback", return_value=feedback
+            ) as poll,
+            patch.object(submissions, "print_submission_details"),
+        ):
+            result = submissions.cmd_submit(
+                ("", ""),
+                "token",
+                "org",
+                "contest",
+                "7",
+                "answer.csv",
+                None,
+                "",
+                True,
+            )
+
+        self.assertEqual(result, 0)
+        poll.assert_called_once()
+        self.assertEqual(poll.call_args.args[2], "canonical-123")
+
+    def test_existing_submission_wait_timeout_and_interrupt_have_distinct_results(self) -> None:
+        with patch.object(
+            submissions,
+            "poll_submission_feedback",
+            side_effect=submissions.SubmissionWaitTimeout("timed out"),
+        ):
+            self.assertEqual(
+                submissions.cmd_wait_submission(("", ""), "token", "id"), 2
+            )
+
+        with patch.object(
+            submissions, "poll_submission_feedback", side_effect=KeyboardInterrupt
+        ):
+            self.assertEqual(
+                submissions.cmd_wait_submission(("", ""), "token", "id"), 130
+            )
 
 
 if __name__ == "__main__":

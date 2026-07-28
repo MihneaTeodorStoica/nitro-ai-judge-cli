@@ -109,6 +109,13 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(slash.source, "source.py")
         self.assertEqual(slash.note, "note")
         self.assertTrue(slash.wait)
+        self.assertEqual(slash.wait_timeout, 180)
+
+        existing = parser.parse_args(
+            ["submission", "submission-id", "--wait", "--wait-timeout", "45"]
+        )
+        self.assertTrue(existing.wait)
+        self.assertEqual(existing.wait_timeout, 45)
 
     def test_download_and_submission_list_short_flags(self) -> None:
         parser = cli.build_parser()
@@ -306,6 +313,30 @@ class ContextDispatchTests(unittest.TestCase):
                             result = cli.main(["ls"])
                 self.assertEqual(result, 23)
                 command.assert_called_once()
+
+    def test_submission_wait_uses_selected_id_and_timeout(self) -> None:
+        auth = ({}, ("", ""), "token")
+        context = {
+            "contest": {"org": "o", "comp": "c"},
+            "task": {"id": "1"},
+            "submission": {"id": "selected-id"},
+        }
+        with patch.object(cli, "require_auth", return_value=auth), patch.object(
+            cli, "load_context", return_value=context
+        ), patch.object(cli, "cmd_submission", return_value=0) as command:
+            result = cli.main(["submission", "--wait", "--wait-timeout", "45"])
+
+        self.assertEqual(result, 0)
+        command.assert_called_once_with(
+            ("", ""),
+            "token",
+            "selected-id",
+            org="o",
+            comp="c",
+            task_id="1",
+            wait=True,
+            wait_timeout=45,
+        )
 
     def test_show_dispatches_submission_task_and_contest_levels(self) -> None:
         auth = ({}, ("", ""), "token")

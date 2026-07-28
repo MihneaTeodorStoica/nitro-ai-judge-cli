@@ -13,6 +13,19 @@ from .config import DEFAULT_SUBMISSION_PAGE_SIZE
 from .state import load_state, update_cache
 from .ui import format_datetime_ms
 
+
+class SubmissionWaitTimeout(RuntimeError):
+    pass
+
+
+def _submission_id(value: dict[str, Any]) -> str:
+    return str(
+        value.get("submissionID")
+        or value.get("submissionId")
+        or value.get("id")
+        or ""
+    )
+
 def get_username(state: dict[str, Any] | None) -> str:
     return (state or {}).get("username") or ""
 
@@ -22,11 +35,7 @@ def _submission_response(status: int, body: str) -> dict[str, Any]:
     parsed = body_json(body)
     if not isinstance(parsed, dict):
         raise RuntimeError("Could not parse submission response")
-    if not (
-        parsed.get("submissionID")
-        or parsed.get("submissionId")
-        or parsed.get("id")
-    ):
+    if not _submission_id(parsed):
         raise RuntimeError("Submission response did not contain an ID")
     return parsed
 
@@ -221,7 +230,7 @@ def load_submissions(
             return parsed, 1
         if not isinstance(parsed, dict):
             return None
-        items = (
+        items_container = (
             parsed.get("data")
             or parsed.get("items")
             or parsed.get("submissions")
@@ -230,11 +239,19 @@ def load_submissions(
             )
             or []
         )
-        if isinstance(items, dict):
-            items = items.get("data") or items.get("items") or []
+        items = items_container
+        if isinstance(items_container, dict):
+            items = items_container.get("data") or items_container.get("items") or []
         if not isinstance(items, list):
             return None
-        last_page = int(parsed.get("lastPage") or parsed.get("last_page") or 1)
+        pagination = items_container if isinstance(items_container, dict) else parsed
+        last_page = int(
+            pagination.get("lastPage")
+            or pagination.get("last_page")
+            or parsed.get("lastPage")
+            or parsed.get("last_page")
+            or 1
+        )
         return items, max(last_page, 1)
 
     if page is not None:
@@ -323,29 +340,25 @@ def print_submission_details(submission: dict[str, Any]) -> None:
         print(f"Complete Score: {submission_score(submission, 'complete')}")
     subtasks = submission.get("subtasks") or []
     if subtasks:
+        def value_at(key: str, index: int) -> Any:
+            values = submission.get(key)
+            return values[index] if isinstance(values, list) and index < len(values) else None
+
         print("\nSubtasks:")
         for index, subtask in enumerate(subtasks):
             metric = subtask.get("metricName") or "metric"
             max_score = subtask.get("maximumScore") or "?"
-            partial_score = (
-                submission.get("partialSubtaskScores") or [None] * len(subtasks)
-            )[index]
-            partial_metric = (
-                submission.get("partialSubtaskMetricValues") or [None] * len(subtasks)
-            )[index]
+            partial_score = value_at("partialSubtaskScores", index)
+            partial_metric = value_at("partialSubtaskMetricValues", index)
             line = f"  #{subtask.get('id')} partial {partial_score}/{max_score}"
             if partial_metric is not None:
                 line += f" | {metric}: {partial_metric}"
             if submission.get("completeTaskScore") is not None:
-                complete_scores = submission.get("completeSubtaskScores") or [
-                    None
-                ] * len(subtasks)
-                complete_metrics = submission.get("completeSubtaskMetricValues") or [
-                    None
-                ] * len(subtasks)
-                line += f" | complete {complete_scores[index]}/{max_score}"
-                if complete_metrics[index] is not None:
-                    line += f" | {metric}: {complete_metrics[index]}"
+                complete_score = value_at("completeSubtaskScores", index)
+                complete_metric = value_at("completeSubtaskMetricValues", index)
+                line += f" | complete {complete_score}/{max_score}"
+                if complete_metric is not None:
+                    line += f" | {metric}: {complete_metric}"
             print(line)
 
 def poll_submission_feedback(
@@ -372,7 +385,7 @@ def poll_submission_feedback(
         if submission.get("state") != "pending":
             return submission
         if time.time() >= deadline:
-            raise RuntimeError("Timed out waiting for submission feedback")
+            raise SubmissionWaitTimeout("Timed out waiting for submission feedback")
         print("Waiting for feedback...", flush=True)
         time.sleep(interval)
 
@@ -398,6 +411,7 @@ def cmd_submit(
     source_path: str | None,
     note: str,
     wait: bool,
+    wait_timeout: int = 180,
 ) -> int:
     try:
         submission = create_submission(
@@ -407,27 +421,57 @@ def cmd_submit(
         print(f"Error: {e}")
         return 1
 
-    submission_id = submission.get("submissionID") or submission.get("submissionId")
+    created_submission_id = _submission_id(submission)
     index = submission.get("submissionConsumptionIndex")
-    print(f"Submission ID: {submission_id}")
+    print(f"Submission ID: {created_submission_id}")
     if index is not None:
         print(f"Submission Count: {index}")
 
-    if wait and submission_id:
-        try:
-            feedback = poll_submission_feedback(
-                cookies,
-                bearer,
-                submission_id,
-                org=org,
-                comp=comp,
-                task_id=task_id,
-            )
-        except RuntimeError as e:
-            print(f"Error: {e}")
-            return 1
-        print()
-        print_submission_details(feedback)
+    if wait and created_submission_id:
+        return cmd_wait_submission(
+            cookies,
+            bearer,
+            created_submission_id,
+            org=org,
+            comp=comp,
+            task_id=task_id,
+            timeout=wait_timeout,
+        )
+    return 0
+
+
+def cmd_wait_submission(
+    cookies: tuple[str, str],
+    bearer: str,
+    submission_id: str,
+    *,
+    org: str | None = None,
+    comp: str | None = None,
+    task_id: str | None = None,
+    timeout: int = 180,
+) -> int:
+    try:
+        feedback = poll_submission_feedback(
+            cookies,
+            bearer,
+            submission_id,
+            org=org,
+            comp=comp,
+            task_id=task_id,
+            timeout=timeout,
+        )
+    except SubmissionWaitTimeout as e:
+        print(f"Error: {e}")
+        print(f"Hint: retry with `naij submission {submission_id} --wait`.")
+        return 2
+    except KeyboardInterrupt:
+        print("\nWaiting interrupted; the remote submission was not cancelled.")
+        return 130
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        return 1
+    print()
+    print_submission_details(feedback)
     return 0
 
 def cmd_submissions(
@@ -477,6 +521,8 @@ def cmd_submission(
     org: str | None = None,
     comp: str | None = None,
     task_id: str | None = None,
+    wait: bool = False,
+    wait_timeout: int = 180,
 ) -> int:
     try:
         submission_id = resolve_submission_id(
@@ -487,13 +533,18 @@ def cmd_submission(
             comp=comp,
             task_id=task_id,
         )
+        if wait:
+            return cmd_wait_submission(
+                cookies,
+                bearer,
+                submission_id,
+                org=org,
+                comp=comp,
+                task_id=task_id,
+                timeout=wait_timeout,
+            )
         submission = load_submission(
-            submission_id,
-            cookies,
-            bearer,
-            org=org,
-            comp=comp,
-            task_id=task_id,
+            submission_id, cookies, bearer, org=org, comp=comp, task_id=task_id
         )
     except RuntimeError as e:
         print(f"Error: {e}")

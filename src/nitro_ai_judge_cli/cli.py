@@ -23,7 +23,13 @@ from .contests import (
     print_competitions,
     task_number,
 )
-from .play import PLAY_ACTIONS, add_play_parser, cmd_play, normalize_play_argv
+from .play import (
+    PLAY_ACTIONS,
+    add_play_parser,
+    cmd_play,
+    normalize_play_argv,
+    positive_seconds,
+)
 from .shell import run_shell
 from .state import (
     CredentialsError,
@@ -298,6 +304,7 @@ def build_parser() -> argparse.ArgumentParser:
     submit.add_argument("-s", "--source")
     submit.add_argument("-n", "--note", default="")
     submit.add_argument("-w", "--wait", action="store_true")
+    submit.add_argument("--wait-timeout", type=positive_seconds, default=180)
 
     submissions = sub.add_parser("submissions", help="List submissions for a task")
     submissions.add_argument("targets", nargs="*", help="[competition] [task]")
@@ -311,6 +318,8 @@ def build_parser() -> argparse.ArgumentParser:
     submission.add_argument("--org")
     submission.add_argument("--comp")
     submission.add_argument("--task-id")
+    submission.add_argument("-w", "--wait", action="store_true")
+    submission.add_argument("--wait-timeout", type=positive_seconds, default=180)
 
     for name, help_text in (("set-final", "Mark a submission as final"), ("unset-final", "Unmark a submission as final")):
         command = sub.add_parser(name, help=help_text)
@@ -390,7 +399,11 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
         elif args.cmd == "submit":
             result = cmd_submit(
                 cookies, bearer, org, comp, task_id,
-                args.output, args.source, args.note, args.wait,
+                args.output,
+                args.source,
+                args.note,
+                args.wait,
+                args.wait_timeout,
             )
         else:
             result = cmd_submissions(
@@ -416,6 +429,8 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
             org=args.org or (contest[0] if contest else None),
             comp=args.comp or (contest[1] if contest else None),
             task_id=args.task_id or selected_task(context),
+            wait=args.wait,
+            wait_timeout=args.wait_timeout,
         )
 
     if args.cmd in {"set-final", "unset-final"}:
