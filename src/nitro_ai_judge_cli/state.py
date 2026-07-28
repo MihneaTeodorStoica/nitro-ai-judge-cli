@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import os
 import sys
 import tempfile
-from typing import Any
+from typing import Any, Callable, Iterator
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from .config import clean_env_value
 
@@ -223,15 +229,56 @@ def load_context() -> dict[str, Any]:
         return {}
 
 
-def save_context(value: dict[str, Any]) -> None:
+def _save_context_unlocked(value: dict[str, Any]) -> None:
     paths = ensure_state_dir()
     _write_json(paths.context, value)
 
 
+@contextmanager
+def _context_lock() -> Iterator[None]:
+    paths = ensure_state_dir()
+    path = f"{paths.context}.lock"
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    os.chmod(path, 0o600)
+    with os.fdopen(descriptor, "r+b", buffering=0) as lock:
+        if os.name == "nt":
+            if os.path.getsize(path) == 0:
+                lock.write(b"\0")
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def save_context(value: dict[str, Any]) -> None:
+    with _context_lock():
+        _save_context_unlocked(value)
+
+
+def mutate_context(change: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
+    with _context_lock():
+        context = load_context()
+        change(context)
+        _save_context_unlocked(context)
+        return context
+
+
 def clear_context() -> None:
-    context = load_context()
-    cache = context.get("cache")
-    save_context({"cache": cache} if isinstance(cache, dict) else {})
+    def clear(context: dict[str, Any]) -> None:
+        cache = context.get("cache")
+        context.clear()
+        if isinstance(cache, dict):
+            context["cache"] = cache
+
+    mutate_context(clear)
 
 
 def selected_contest(context: dict[str, Any] | None = None) -> tuple[str, str] | None:
@@ -279,53 +326,58 @@ def selected_submission(context: dict[str, Any] | None = None) -> str | None:
 
 
 def set_contest(contest: dict[str, Any]) -> dict[str, Any]:
-    context = load_context()
-    previous = selected_contest(context)
     org = str(contest.get("organizationSlug") or contest.get("org") or "")
     comp = str(contest.get("competitionSlug") or contest.get("comp") or "")
     if not org or not comp:
         raise ValueError("contest requires organizationSlug and competitionSlug")
-    context["contest"] = {**contest, "organizationSlug": org, "competitionSlug": comp}
-    if previous != (org, comp):
-        context.pop("task", None)
-        context.pop("submission", None)
-    save_context(context)
-    return context
+
+    def select(context: dict[str, Any]) -> None:
+        previous = selected_contest(context)
+        context["contest"] = {
+            **contest,
+            "organizationSlug": org,
+            "competitionSlug": comp,
+        }
+        if previous != (org, comp):
+            context.pop("task", None)
+            context.pop("submission", None)
+
+    return mutate_context(select)
 
 
 def set_task(task: dict[str, Any] | str | int) -> dict[str, Any]:
-    context = load_context()
     task_value = {"id": str(task)} if not isinstance(task, dict) else dict(task)
     if task_value.get("id") is None:
         raise ValueError("task requires an id")
     task_value["id"] = str(task_value["id"])
-    if selected_task(context) != task_value["id"]:
-        context.pop("submission", None)
-    context["task"] = task_value
-    save_context(context)
-    return context
+
+    def select(context: dict[str, Any]) -> None:
+        if selected_task(context) != task_value["id"]:
+            context.pop("submission", None)
+        context["task"] = task_value
+
+    return mutate_context(select)
 
 
 def set_submission(submission: dict[str, Any] | str) -> dict[str, Any]:
-    context = load_context()
     value = {"id": submission} if isinstance(submission, str) else dict(submission)
-    context["submission"] = value
-    save_context(context)
-    return context
+
+    return mutate_context(lambda context: context.__setitem__("submission", value))
 
 
 def update_cache(kind: str, key: str, items: list[dict[str, Any]]) -> None:
-    context = load_context()
-    cache = context.setdefault("cache", {})
-    if not isinstance(cache, dict):
-        cache = {}
-        context["cache"] = cache
-    bucket = cache.setdefault(kind, {})
-    if not isinstance(bucket, dict):
-        bucket = {}
-        cache[kind] = bucket
-    bucket[key] = items
-    save_context(context)
+    def update(context: dict[str, Any]) -> None:
+        cache = context.setdefault("cache", {})
+        if not isinstance(cache, dict):
+            cache = {}
+            context["cache"] = cache
+        bucket = cache.setdefault(kind, {})
+        if not isinstance(bucket, dict):
+            bucket = {}
+            cache[kind] = bucket
+        bucket[key] = items
+
+    mutate_context(update)
 
 
 def cached_items(kind: str, key: str) -> list[dict[str, Any]]:
