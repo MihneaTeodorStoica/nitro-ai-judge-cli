@@ -485,10 +485,12 @@ internally.
 The release workflow runs host tests on Linux, Windows, and macOS, builds and
 checks the CLI, builds the manager, and runs Linux Docker integration. A release
 tag must exactly match `pyproject.toml`. It refuses an existing immutable GHCR
-tag, publishes `linux/amd64` and `linux/arm64`, then updates the matching `3.0`
-and `stable` tags. PyPI publication happens only after GHCR succeeds. The
-development branch publishes `edge`; neither the workflow nor installer uses
-`latest`.
+tag, smoke-tests the ARM64 candidate under QEMU, publishes `linux/amd64` and
+`linux/arm64`, then updates the matching `3.0` and `stable` tags. PyPI
+publication happens only after GHCR succeeds, and the GitHub Release is created
+only after PyPI succeeds. Successful pushes to `main` publish `edge`; neither
+the workflow nor installer uses `latest`. Native Docker integration continues
+to cover host socket behavior; the ARM64 check covers packaging and startup.
 
 Recommended release checks:
 
