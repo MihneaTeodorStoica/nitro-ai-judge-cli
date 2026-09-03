@@ -2,11 +2,14 @@
 
 ## Boundary
 
-NAIJ 3.0 has one host-side Docker boundary: installing, updating, starting, or
-uninstalling the manager container. Competition commands and the Textual TUI
-call the authenticated manager API and never invoke Docker for competition
-state. The manager mounts the selected local daemon socket and includes the
-Docker CLI plus Compose plugin. It is not Docker-in-Docker.
+NAIJ has one host-side container-runtime boundary: installing, updating,
+starting, or uninstalling the manager container. It prefers a working local
+Podman installation and falls back to Docker; an existing installation retains
+its saved runtime. Competition commands and the Textual TUI call the
+authenticated manager API and never invoke a host runtime for competition
+state. The manager mounts the selected local API socket and includes the Docker
+CLI plus Compose plugin, which also speaks Podman's Docker-compatible API. It
+is not Docker-in-Docker.
 
 The default endpoint is `http://localhost:51123/nitro/`. Jupyter and the
 submission proxy retain internal ports 8888 and 9000 but are not published.
@@ -34,7 +37,7 @@ NAIJ state root):
 Operational metadata, normalized Nitro credentials, adoption records,
 operation events, and competition snapshots live transactionally in SQLite in
 the private `naij-play-manager-state` volume. Manager restarts mark incomplete
-operations interrupted, then reconstruct runtime truth from live Docker labels.
+operations interrupted, then reconstruct runtime truth from live container labels.
 An explicit user stop is persisted and never auto-started.
 
 ## Runtime objects and ownership
@@ -46,7 +49,7 @@ Every new container, network, and volume has
 `org.nitro-ai.naij.play.*` labels for owner, competition identity, role,
 schema, API, and workspace. Destructive operations verify those labels first.
 A verified adoption record is the sole exception for a legacy unlabeled
-workspace volume, because Docker cannot add labels to an existing volume.
+workspace volume, because container runtimes cannot add labels to an existing volume.
 
 Compose files are generated and submitted with argument arrays. User values
 never enter shell command strings. The fixed volume-population helper receives
@@ -101,11 +104,12 @@ invalid dashboard tokens return the token login page with a visible error.
 
 ## Installation, update, and recovery
 
-Installation validates the active Docker context and Linux-container mode,
-rejects remote SSH/TCP endpoints, checks the selected port's identity, pulls
-only a missing image, writes configuration atomically, starts the manager,
-waits for health, verifies identity/API/minimum CLI compatibility, synchronizes
-credentials, and submits read-only legacy discovery.
+Installation checks Podman first and Docker second, validates local API-socket
+and Linux-container mode, rejects remote SSH/TCP endpoints, checks the selected
+port's identity, pulls only a missing image without a fixed pull deadline,
+writes configuration atomically, starts the manager, waits for health, verifies
+identity/API/minimum CLI compatibility, synchronizes credentials, and submits
+read-only legacy discovery.
 
 An update saves the prior image and Compose bytes. If the replacement is not
 healthy, it restores and starts the prior configuration. Uninstall runs Compose

@@ -179,7 +179,7 @@ def perform_play_action(
     client: ManagerClient | None = None,
     quiet: bool = False,
     yes: bool = False,
-    timeout: int = 600,
+    timeout: float | None = 600,
     **options: Any,
 ) -> dict[str, Any]:
     client = client or _client(yes=yes)
@@ -301,7 +301,7 @@ def cmd_play_up(
         client=client,
         quiet=quiet,
         yes=yes,
-        timeout=wait_timeout + 240,
+        timeout=None,
         gpu=gpu,
         pull=pull,
         wait_timeout=wait_timeout,
@@ -564,7 +564,11 @@ def cmd_play(args: argparse.Namespace) -> int:
             action,
             client=client,
             yes=getattr(args, "yes", False),
-            timeout=getattr(args, "wait_timeout", PLAY_WAIT_TIMEOUT) + 240,
+            timeout=(
+                None
+                if action in {"pull", "play", "up", "recreate"}
+                else getattr(args, "wait_timeout", PLAY_WAIT_TIMEOUT) + 240
+            ),
             **options,
         )
         if action in {"play", "recreate"} and getattr(args, "open", False):

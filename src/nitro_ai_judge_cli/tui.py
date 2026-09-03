@@ -250,7 +250,7 @@ def _load_submission_with_auth(
 
 
 async def _wait_for_play_operation(
-    client: ManagerClient, operation_id: str, *, timeout: float
+    client: ManagerClient, operation_id: str, *, timeout: float | None
 ) -> dict[str, Any]:
     stop_event = threading.Event()
     loop = asyncio.get_running_loop()
@@ -2511,7 +2511,7 @@ class NitroTUI(App[int]):
                 await _wait_for_play_operation(
                     client,
                     str(accepted["operation_id"]),
-                    timeout=600,
+                    timeout=None if action in {"pull", "play", "recreate"} else 600,
                 )
             self.set_status(f"Play {action} completed.", "success")
             self.refresh_play_status()

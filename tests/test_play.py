@@ -548,6 +548,39 @@ class ManagerConfigurationTests(unittest.TestCase):
         state.configure_state_dir(None)
         self.tempdir.cleanup()
 
+    def test_runtime_resolution_prefers_working_podman_then_docker(self) -> None:
+        podman = DockerEndpoint(
+            "default", "unix:///run/podman.sock", "/run/podman.sock", "linux", "podman"
+        )
+        docker = DockerEndpoint(
+            "default", "unix:///run/docker.sock", "/run/docker.sock", "linux"
+        )
+        with (
+            patch.object(play_manager_lifecycle.shutil, "which", return_value="/bin/runtime"),
+            patch.object(
+                play_manager_lifecycle, "_resolve_podman_endpoint", return_value=podman
+            ) as resolve_podman,
+            patch.object(
+                play_manager_lifecycle, "_resolve_docker_endpoint", return_value=docker
+            ) as resolve_docker,
+        ):
+            self.assertEqual(play_manager_lifecycle.resolve_docker_endpoint(), podman)
+        resolve_podman.assert_called_once_with()
+        resolve_docker.assert_not_called()
+
+        with (
+            patch.object(play_manager_lifecycle.shutil, "which", return_value="/bin/runtime"),
+            patch.object(
+                play_manager_lifecycle,
+                "_resolve_podman_endpoint",
+                side_effect=RuntimeError("Podman socket missing"),
+            ),
+            patch.object(
+                play_manager_lifecycle, "_resolve_docker_endpoint", return_value=docker
+            ),
+        ):
+            self.assertEqual(play_manager_lifecycle.resolve_docker_endpoint(), docker)
+
     def test_compose_uses_secret_file_socket_network_and_labels(self) -> None:
         paths = state.ensure_state_dir().play_manager
         os.makedirs(paths)
@@ -574,6 +607,34 @@ class ManagerConfigurationTests(unittest.TestCase):
             service["labels"]["org.nitro-ai.naij.play.owner"], "naij-play-manager"
         )
         self.assertNotIn("private", json.dumps(compose))
+
+    def test_podman_compose_disables_selinux_relabelling_for_socket(self) -> None:
+        paths = state.ensure_state_dir().play_manager
+        os.makedirs(paths)
+        with open(os.path.join(paths, "cli-api-token"), "w", encoding="utf-8") as stream:
+            stream.write("private")
+        config = {
+            "bind": "127.0.0.1",
+            "port": 51123,
+            "public_url": "http://localhost:51123",
+            "image": "manager:test",
+            "tls_cert": None,
+            "tls_key": None,
+            "dashboard_token": False,
+        }
+        endpoint = DockerEndpoint(
+            "default",
+            "unix:///run/user/1000/podman/podman.sock",
+            "/run/user/1000/podman/podman.sock",
+            "linux",
+            "podman",
+        )
+        service = generate_manager_compose(config, endpoint)["services"]["manager"]
+        self.assertEqual(service["security_opt"], ["label=disable"])
+        self.assertIn(
+            "/run/user/1000/podman/podman.sock:/var/run/docker.sock",
+            service["volumes"],
+        )
 
     def test_tls_healthcheck_uses_https_without_loopback_verification(self) -> None:
         paths = state.ensure_state_dir().play_manager
@@ -745,6 +806,16 @@ class ManagerClientTests(unittest.TestCase):
         ):
             client.wait_operation("operation", stop_event=stop_event)
         operation.assert_not_called()
+
+    def test_wait_operation_can_wait_without_a_deadline(self) -> None:
+        client = ManagerClient("http://localhost", "token")
+        with patch.object(
+            client,
+            "operation",
+            side_effect=[{"status": "running"}, {"status": "complete", "result": {}}],
+        ):
+            operation = client.wait_operation("operation", timeout=None, interval=0)
+        self.assertEqual(operation["status"], "complete")
 
     def test_follow_logs_decodes_ndjson_to_plain_lines(self) -> None:
         class Response(list):
