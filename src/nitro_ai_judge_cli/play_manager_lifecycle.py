@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -39,6 +40,7 @@ class DockerEndpoint:
     host: str
     socket_source: str
     os_type: str
+    runtime: str = "docker"
 
 
 def run_process(
@@ -46,7 +48,7 @@ def run_process(
     *,
     check: bool = True,
     input_text: str | None = None,
-    timeout: float = 30,
+    timeout: float | None = 30,
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
@@ -59,11 +61,11 @@ def run_process(
             timeout=timeout,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError("Docker is not installed or not on PATH") from exc
+        raise RuntimeError(f"{command[0]} is not installed or not on PATH") from exc
     except subprocess.TimeoutExpired as exc:
         operation = " ".join(command[:3])
         raise RuntimeError(
-            f"Docker operation timed out after {timeout:g} seconds: {operation}"
+            f"Container operation timed out after {timeout:g} seconds: {operation}"
         ) from exc
     if check and result.returncode:
         details = (result.stderr or result.stdout or "").strip()
@@ -71,7 +73,54 @@ def run_process(
     return result
 
 
-def resolve_docker_endpoint() -> DockerEndpoint:
+def _validate_local_endpoint(
+    runtime: str, context: str, endpoint: str, os_type: str
+) -> DockerEndpoint:
+    display = runtime.capitalize()
+    if os_type and os_type != "linux":
+        raise RuntimeError(f"The Play manager requires {display} Linux containers")
+    if endpoint.startswith(("ssh://", "tcp://")):
+        raise RuntimeError(
+            f"{display} endpoint {context!r} is remote ({endpoint}); "
+            "the Play manager supports only a local runtime"
+        )
+    if endpoint.startswith("unix://"):
+        source = endpoint.removeprefix("unix://")
+        if not os.path.exists(source):
+            hint = (
+                "; start it with `systemctl --user enable --now podman.socket`"
+                if runtime == "podman"
+                else ""
+            )
+            raise RuntimeError(f"{display} socket does not exist: {source}{hint}")
+    elif endpoint.startswith("npipe://"):
+        if runtime != "docker" or platform.system() != "Windows":
+            raise RuntimeError(f"Unsupported {display} endpoint: {endpoint}")
+        source = "/var/run/docker.sock"
+    else:
+        raise RuntimeError(f"Unsupported {display} endpoint {endpoint!r}")
+    return DockerEndpoint(context, endpoint, source, os_type or "linux", runtime)
+
+
+def _resolve_podman_endpoint() -> DockerEndpoint:
+    run_process(["podman", "--version"])
+    run_process(["podman", "compose", "version"])
+    info = run_process(["podman", "info", "--format", "{{json .}}"])
+    try:
+        data = json.loads(info.stdout)
+        host = data.get("host") or {}
+        socket_path = str((host.get("remoteSocket") or {}).get("path") or "")
+        os_type = str(host.get("os") or "linux")
+    except (AttributeError, TypeError, json.JSONDecodeError):
+        socket_path, os_type = "", "linux"
+    configured = os.environ.get("CONTAINER_HOST", "").strip()
+    endpoint = configured or (f"unix://{socket_path}" if socket_path else "")
+    if not endpoint:
+        raise RuntimeError("Could not resolve the Podman API socket")
+    return _validate_local_endpoint("podman", "default", endpoint, os_type)
+
+
+def _resolve_docker_endpoint() -> DockerEndpoint:
     run_process(["docker", "--version"])
     run_process(["docker", "compose", "version"])
     context = run_process(["docker", "context", "show"]).stdout.strip() or "default"
@@ -81,35 +130,37 @@ def resolve_docker_endpoint() -> DockerEndpoint:
         endpoint = str(context_data["Endpoints"]["docker"]["Host"])
     except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Could not resolve Docker context {context!r}") from exc
-    configured = os.environ.get("DOCKER_HOST", "").strip()
-    if configured:
-        endpoint = configured
+    endpoint = os.environ.get("DOCKER_HOST", "").strip() or endpoint
     info = run_process(["docker", "info", "--format", "{{json .}}"])
     try:
         os_type = str(json.loads(info.stdout).get("OSType") or "")
     except (TypeError, json.JSONDecodeError):
         os_type = ""
-    if os_type and os_type != "linux":
-        raise RuntimeError(
-            "The Play manager requires Docker Desktop Linux containers; switch from Windows containers and retry"
-        )
-    if endpoint.startswith("ssh://") or endpoint.startswith("tcp://"):
-        raise RuntimeError(
-            f"Docker context {context!r} is remote ({endpoint}); the Play manager supports only a local Docker daemon"
-        )
-    if endpoint.startswith("unix://"):
-        source = endpoint.removeprefix("unix://")
-        if not os.path.exists(source):
-            raise RuntimeError(f"Docker socket does not exist: {source}")
-    elif endpoint.startswith("npipe://"):
-        if platform.system() != "Windows":
-            raise RuntimeError(f"Unsupported Docker endpoint: {endpoint}")
-        source = "/var/run/docker.sock"
+    return _validate_local_endpoint("docker", context, endpoint, os_type)
+
+
+def resolve_docker_endpoint(preferred_runtime: str | None = None) -> DockerEndpoint:
+    """Select Podman before Docker, unless an installation saved its runtime."""
+    resolvers = {
+        "podman": _resolve_podman_endpoint,
+        "docker": _resolve_docker_endpoint,
+    }
+    if preferred_runtime:
+        if preferred_runtime not in resolvers:
+            raise RuntimeError(f"Unsupported saved container runtime: {preferred_runtime}")
+        choices = (preferred_runtime,)
     else:
-        raise RuntimeError(
-            f"Unsupported Docker endpoint {endpoint!r}; select a local Unix-socket Docker context"
-        )
-    return DockerEndpoint(context, endpoint, source, os_type or "linux")
+        choices = ("podman", "docker")
+    errors: list[str] = []
+    for runtime in choices:
+        if shutil.which(runtime) is None:
+            continue
+        try:
+            return resolvers[runtime]()
+        except RuntimeError as exc:
+            errors.append(str(exc))
+    details = f" ({'; '.join(errors)})" if errors else ""
+    raise RuntimeError(f"Podman or Docker with Compose is required{details}")
 
 
 def manager_paths() -> dict[str, str]:
@@ -224,31 +275,30 @@ def generate_manager_compose(
             f"{health_url!r}, context=ssl._create_unverified_context(), timeout=2"
         )
     health_script += ")"
+    service: dict[str, Any] = {
+        "image": config["image"],
+        "restart": "unless-stopped",
+        "environment": environment,
+        "ports": [f"{bind}:{port}:51123"],
+        "volumes": volumes,
+        "secrets": service_secrets,
+        "networks": ["nitro"],
+        "labels": labels,
+        "healthcheck": {
+            "test": ["CMD", "python", "-c", health_script],
+            "interval": "5s",
+            "timeout": "3s",
+            "retries": 12,
+            "start_period": "5s",
+        },
+    }
+    if endpoint.runtime == "podman":
+        # Rootless Podman sockets cannot be relabelled for one container.
+        service["security_opt"] = ["label=disable"]
     return {
         "name": MANAGER_PROJECT,
         "services": {
-            "manager": {
-                "image": config["image"],
-                "restart": "unless-stopped",
-                "environment": environment,
-                "ports": [f"{bind}:{port}:51123"],
-                "volumes": volumes,
-                "secrets": service_secrets,
-                "networks": ["nitro"],
-                "labels": labels,
-                "healthcheck": {
-                    "test": [
-                        "CMD",
-                        "python",
-                        "-c",
-                        health_script,
-                    ],
-                    "interval": "5s",
-                    "timeout": "3s",
-                    "retries": 12,
-                    "start_period": "5s",
-                },
-            }
+            "manager": service
         },
         "volumes": {MANAGER_VOLUME: {"name": MANAGER_VOLUME, "labels": labels}},
         "networks": {
@@ -259,8 +309,10 @@ def generate_manager_compose(
 
 
 def _compose_command(*args: str) -> list[str]:
+    config = load_manager_config() or {}
+    runtime = str(config.get("container_runtime") or "docker")
     return [
-        "docker",
+        runtime,
         "compose",
         "--project-name",
         MANAGER_PROJECT,
@@ -329,12 +381,17 @@ def install_manager(
     validate_manager_exposure(
         bind, tls_cert=tls_cert, tls_key=tls_key, public_url=public_url
     )
-    endpoint = resolve_docker_endpoint()
+    old_config = load_manager_config()
+    saved_runtime = (
+        str(old_config.get("container_runtime") or "docker")
+        if old_config is not None
+        else None
+    )
+    endpoint = resolve_docker_endpoint(saved_runtime)
     paths = manager_paths()
     ensure_state_dir()
     os.makedirs(paths["root"], mode=0o700, exist_ok=True)
     os.chmod(paths["root"], 0o700)
-    old_config = load_manager_config()
     old_compose = None
     try:
         with open(paths["compose"], "rb") as stream:
@@ -390,11 +447,14 @@ def install_manager(
         "dashboard_token": bool(lan),
         "docker_context": endpoint.context,
         "docker_host": endpoint.host,
+        "container_runtime": endpoint.runtime,
     }
     compose = generate_manager_compose(config, endpoint)
-    image_present = run_process(["docker", "image", "inspect", image], check=False).returncode == 0
+    image_present = run_process(
+        [endpoint.runtime, "image", "inspect", image], check=False
+    ).returncode == 0
     if update or not image_present:
-        run_process(["docker", "pull", image], timeout=1800)
+        run_process([endpoint.runtime, "pull", image], timeout=None)
     try:
         atomic_write(
             paths["config"],
@@ -409,7 +469,7 @@ def install_manager(
         sync_manager_credentials(required=False)
         from .play_legacy import discover_legacy_environments
 
-        manifests = discover_legacy_environments()
+        manifests = discover_legacy_environments(endpoint.runtime)
         if manifests:
             ManagerClient.from_state().adopt_legacy(manifests)
         return info
@@ -473,8 +533,9 @@ def purge_manager_state(*, force: bool = False) -> None:
     if not force:
         raise RuntimeError("Purging manager-private state requires --force")
     uninstall_manager()
+    runtime = str((load_manager_config() or {}).get("container_runtime") or "docker")
     inspected = run_process(
-        ["docker", "volume", "inspect", MANAGER_VOLUME], check=False
+        [runtime, "volume", "inspect", MANAGER_VOLUME], check=False
     )
     if inspected.returncode == 0:
         try:
@@ -485,7 +546,7 @@ def purge_manager_state(*, force: bool = False) -> None:
             raise RuntimeError(
                 f"Refusing to remove volume {MANAGER_VOLUME}: ownership label is missing"
             )
-        run_process(["docker", "volume", "rm", MANAGER_VOLUME], timeout=60)
+        run_process([runtime, "volume", "rm", MANAGER_VOLUME], timeout=60)
 
 
 def normalized_credentials(value: dict[str, Any]) -> dict[str, Any]:

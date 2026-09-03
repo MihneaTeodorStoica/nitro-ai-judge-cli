@@ -47,7 +47,7 @@ def _docker(command: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(command, 127, "", "")
 
 
-def discover_legacy_environments() -> list[dict[str, Any]]:
+def discover_legacy_environments(runtime: str = "docker") -> list[dict[str, Any]]:
     root = resolve_state_paths().play
     try:
         entries = sorted(os.scandir(root), key=lambda item: item.name)
@@ -71,7 +71,7 @@ def discover_legacy_environments() -> list[dict[str, Any]]:
         project = f"nitro-{org}-{competition}"
         listed = _docker(
             [
-                "docker",
+                runtime,
                 "ps",
                 "-a",
                 "--filter",
@@ -90,7 +90,7 @@ def discover_legacy_environments() -> list[dict[str, Any]]:
         workspace_volume = ""
         workspace_kind = "container-layer"
         if container_id:
-            inspected = _docker(["docker", "inspect", container_id])
+            inspected = _docker([runtime, "inspect", container_id])
             try:
                 mounts = json.loads(inspected.stdout)[0].get("Mounts") or []
             except (ValueError, IndexError, TypeError, json.JSONDecodeError):

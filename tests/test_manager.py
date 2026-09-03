@@ -784,6 +784,7 @@ class ManagerBackendSafetyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("elapsed" in call.args[1] for call in progress.await_args_list)
         )
+        self.assertIsNone(self.backend.run.await_args.kwargs["timeout"])
 
     async def test_cancelling_pull_terminates_docker_process(self) -> None:
         class HangingProcess:

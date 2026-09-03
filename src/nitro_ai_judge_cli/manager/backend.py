@@ -82,7 +82,7 @@ class DockerBackend:
         *,
         check: bool = True,
         input_bytes: bytes | None = None,
-        timeout: float = 300,
+        timeout: float | None = 300,
     ) -> tuple[int, str, str]:
         process = await asyncio.create_subprocess_exec(
             *command,
@@ -91,8 +91,11 @@ class DockerBackend:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(input_bytes), timeout=timeout
+            communication = process.communicate(input_bytes)
+            stdout, stderr = (
+                await communication
+                if timeout is None
+                else await asyncio.wait_for(communication, timeout=timeout)
             )
         except asyncio.CancelledError:
             if process.returncode is None:
@@ -114,7 +117,7 @@ class DockerBackend:
             await process.wait()
             raise WireError(
                 ErrorType.DOCKER_UNAVAILABLE.value,
-                f"Docker command timed out after {int(timeout)} seconds",
+                f"Docker command timed out after {int(timeout or 0)} seconds",
                 stage="applying",
                 status=504,
             )
@@ -809,7 +812,7 @@ class DockerBackend:
                 pass
 
     async def _pull_image(self, image: str, message: str, progress: Progress) -> None:
-        task = asyncio.create_task(self.run(["docker", "pull", image], timeout=1800))
+        task = asyncio.create_task(self.run(["docker", "pull", image], timeout=None))
         started = time.monotonic()
         try:
             while True:

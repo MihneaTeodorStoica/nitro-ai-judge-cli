@@ -161,14 +161,14 @@ class ManagerClient:
         self,
         operation_id: str,
         *,
-        timeout: float = 600,
+        timeout: float | None = 600,
         interval: float = 0.5,
         progress: Callable[[dict[str, Any]], None] | None = None,
         stop_event: threading.Event | None = None,
     ) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
         last_sequence = -1
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             if stop_event is not None and stop_event.is_set():
                 raise InterruptedError("Stopped waiting for Play operation")
             operation = self.operation(operation_id)
@@ -195,6 +195,7 @@ class ManagerClient:
                     raise InterruptedError("Stopped waiting for Play operation")
             else:
                 time.sleep(interval)
+        assert timeout is not None
         raise ManagerConnectionError(
             f"Play operation did not finish within {int(timeout)} seconds"
         )

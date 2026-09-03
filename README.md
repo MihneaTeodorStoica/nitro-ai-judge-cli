@@ -17,8 +17,8 @@ Selections are shared with the regular `naij` shell and commands.
 ## 3.0 highlights
 
 - `naij tui` provides a keyboard-first, full-screen contest cockpit.
-- `naij play manager install` starts the local Docker-backed Play manager; its
-  dashboard updates live when NAIJ or Docker changes a managed competition.
+- `naij play manager install` starts the local container-backed Play manager; its
+  dashboard updates live when NAIJ or the container runtime changes a managed competition.
 - The manager keeps Play services private behind stable Jupyter and submission
   proxy routes, with operation progress, redacted logs, cancellation, and
   offline recovery instructions.
@@ -30,7 +30,8 @@ Selections are shared with the regular `naij` shell and commands.
 
 - Python 3.10+
 - Textual 8.2.x (installed automatically)
-- A local Linux-container Docker daemon with the Compose plugin for `naij play`
+- Podman with Compose (preferred when installed), or a local Linux-container
+  Docker daemon with the Compose plugin, for `naij play`
 
 ## Installation
 
@@ -294,7 +295,8 @@ Lifecycle behavior:
 
 - `play`, `pull`, `start`, `stop`, `restart`, and `recreate` are idempotent,
   asynchronous manager operations. Identical concurrent requests share one
-  operation; conflicting requests report `competition_busy`.
+  operation; conflicting requests report `competition_busy`. Image pulls have
+  no fixed deadline; `--wait-timeout` bounds service startup after a pull.
 - Explicit `stop` remains stopped until the user starts or recreates it.
 - `delete-container` removes containers and the private project network but
   preserves `/home/jovyan`.
@@ -498,7 +500,7 @@ python3 -m twine check dist/*
 docker build -f manager/Dockerfile -t naij-play-manager:dev .
 NAIJ_DOCKER_INTEGRATION=1 NAIJ_PLAY_MANAGER_IMAGE=naij-play-manager:dev \
   python3 -m unittest discover -s tests/integration -v
-git tag v3.1.4
+git tag v3.1.5
 git push origin main --tags
 ```
 
