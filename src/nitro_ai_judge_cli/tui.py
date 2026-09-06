@@ -1687,6 +1687,8 @@ class NitroTUI(App[int]):
             self.action_view(number)
 
     def _show_active_view(self) -> None:
+        if not self.query("#task-views"):
+            return
         ids = ("view-overview", "view-data", "view-submissions", "view-play")
         self.query_one("#task-views", ContentSwitcher).current = ids[
             self.active_view - 1
@@ -1905,10 +1907,14 @@ class NitroTUI(App[int]):
         self.render_submissions_worker()
 
     def _update_overview_search(self) -> None:
-        field = self.query_one("#overview-filter", Input)
-        source = getattr(self, "overview_source", "")
+        fields = self.query("#overview-filter")
+        results = self.query("#overview-search-result")
+        if not fields or not results:
+            return
+        field = fields.first(Input)
+        source = getattr(self, "overview_source", "") or str((self.current_task or {}).get("statement") or "")
         query = field.value
-        result = self.query_one("#overview-search-result", Static)
+        result = results.first(Static)
         active = bool(query and field.has_class("-open"))
         result.set_class(active, "-open")
         self.query_one("#overview", Markdown).display = not active
@@ -1921,7 +1927,8 @@ class NitroTUI(App[int]):
         for index, match in enumerate(self.overview_matches):
             text.stylize("bold reverse" if index == self.overview_match_index else "underline", match.start(), match.end())
         result.update(text)
-        self.set_status(f"Match {self.overview_match_index + 1 if count else 0}/{count} · F3 next · Shift+F3 previous · Esc closes")
+        if self.query("#status-line"):
+            self.set_status(f"Match {self.overview_match_index + 1 if count else 0}/{count} · F3 next · Shift+F3 previous · Esc closes")
         if count:
             self.call_after_refresh(self._scroll_overview_match)
 
