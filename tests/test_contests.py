@@ -326,6 +326,87 @@ class TaskFileTests(unittest.TestCase):
             "sample_output.csv",
         )
 
+    def test_stream_task_file_writes_text_and_binary_bytes_without_files(self) -> None:
+        class Stdout:
+            def __init__(self) -> None:
+                self.buffer = io.BytesIO()
+
+            def isatty(self) -> bool:
+                return False
+
+        stdout = Stdout()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(contests, "load_task_file_links", return_value={}),
+            patch.object(
+                contests,
+                "download_task_file",
+                return_value=(200, b"text\x00\xffbinary", {"Content-Type": "application/octet-stream"}),
+            ),
+            patch.object(contests.sys, "stdout", stdout),
+        ):
+            contests.stream_task_file(
+                COOKIES,
+                BEARER,
+                "org",
+                "contest",
+                "7",
+                categories=["train_data"],
+            )
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+        self.assertEqual(stdout.buffer.getvalue(), b"text\x00\xffbinary")
+
+    def test_stream_task_file_requires_one_category_and_refuses_terminal(self) -> None:
+        class Terminal:
+            buffer = io.BytesIO()
+
+            def isatty(self) -> bool:
+                return True
+
+        with self.assertRaisesRegex(RuntimeError, "exactly one"):
+            contests.stream_task_file(
+                COOKIES, BEARER, "org", "contest", "7", categories=None
+            )
+        with patch.object(contests.sys, "stdout", Terminal()):
+            with self.assertRaisesRegex(RuntimeError, "interactive terminal"):
+                contests.stream_task_file(
+                    COOKIES,
+                    BEARER,
+                    "org",
+                    "contest",
+                    "7",
+                    categories=["train_data"],
+                )
+
+    def test_stdout_download_http_errors_are_only_written_to_stderr(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch.object(
+                contests,
+                "stream_task_file",
+                side_effect=RuntimeError("Could not download train_data: HTTP 404: missing"),
+            ),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            result = contests.cmd_download_data(
+                COOKIES,
+                BEARER,
+                "org",
+                "contest",
+                "7",
+                categories=["train_data"],
+                output_dir=".",
+                output_path="-",
+                force=False,
+            )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("HTTP 404", stderr.getvalue())
+
     def test_download_data_writes_file_and_always_cleans_spinner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             stop = object()

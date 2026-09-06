@@ -45,6 +45,7 @@ class SubmissionTests(unittest.TestCase):
                     str(source),
                     "",
                 )
+                wire_body = b"".join(request.call_args.kwargs["data"])
 
         self.assertEqual(result["submissionID"], "submission-id")
         kwargs = request.call_args.kwargs
@@ -54,9 +55,9 @@ class SubmissionTests(unittest.TestCase):
         self.assertEqual(kwargs["method"], "POST")
         self.assertEqual(kwargs["bearer"], "token")
         self.assertIn("multipart/form-data; boundary=----NAIJ", kwargs["headers"]["Content-Type"])
-        self.assertIn(b'name="note"\r\n\r\nnaij', kwargs["data"])
-        self.assertIn(b'filename="answer.csv"', kwargs["data"])
-        self.assertIn(b'filename="solution.py"', kwargs["data"])
+        self.assertIn(b'name="note"\r\n\r\nnaij', wire_body)
+        self.assertIn(b'filename="answer.csv"', wire_body)
+        self.assertIn(b'filename="solution.py"', wire_body)
 
     def test_proxy_submission_uses_json_payload_and_requires_source(self) -> None:
         config._runtime = config.RuntimeConfig("http://proxy.invalid", True)
