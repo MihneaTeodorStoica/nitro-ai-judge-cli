@@ -277,18 +277,28 @@ class ManagerStore:
                 (status, stage, message, json.dumps(error), now, operation_id),
             )
 
-    def operations(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def operations(self, *, limit: int = 50, offset: int = 0, competition: str | None = None, status: str | None = None, action: str | None = None) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 200))
+        filters, values = [], []
+        for column, value in (("competition_key", competition), ("status", status), ("action", action)):
+            if value is not None:
+                filters.append(f"{column}=?")
+                values.append(value)
+        where = " WHERE " + " AND ".join(filters) if filters else ""
         with self.lock:
             rows = self.connection.execute(
-                """
-                SELECT * FROM operations
-                ORDER BY updated_at DESC, created_at DESC, id DESC
-                LIMIT ?
-                """,
-                (limit,),
+                "SELECT *, (SELECT MIN(created_at) FROM operation_events e WHERE e.operation_id=operations.id AND e.sequence>1) AS started_at FROM operations" + where +
+                " ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT ? OFFSET ?",
+                (*values, limit, max(0, int(offset))),
             ).fetchall()
-        return [self._operation_row(row) for row in rows]
+        result = []
+        for row in rows:
+            item = self._operation_row(row)
+            item["started_at"] = row["started_at"]
+            item["finished_at"] = item["updated_at"] if item["status"] in {"complete", "failed", "cancelled", "interrupted"} else None
+            item["duration"] = max(0, (item["finished_at"] or time.time()) - (item["started_at"] or item["created_at"]))
+            result.append(item)
+        return result
 
     def operation(self, operation_id: str) -> dict[str, Any] | None:
         with self.lock:

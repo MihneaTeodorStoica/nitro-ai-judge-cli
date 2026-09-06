@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install CLI and manager test dependencies
-        run: python -m pip install ".[manager]"
+        run: python -m pip install ".[manager]" "jsonschema>=4,<5" "openapi-spec-validator>=0.7,<1"
       - name: Run unit and Textual Pilot tests
         run: python -m unittest discover -s tests -v
 
@@ -102,6 +102,27 @@ jobs:
         run: |
           docker run --rm --platform linux/arm64 --entrypoint docker naij-play-manager:ci-arm64 compose version
           docker run --rm --platform linux/arm64 --entrypoint python naij-play-manager:ci-arm64 -c "import aiohttp, nitro_ai_judge_cli.manager"
+      - name: Start ARM64 entrypoint and verify health and identity (emulated)
+        shell: bash
+        run: |
+          TOKEN_FILE="$(mktemp)"
+          chmod 600 "$TOKEN_FILE"
+          openssl rand -hex 32 > "$TOKEN_FILE"
+          CID=""
+          trap 'test -z "$CID" || docker rm -f "$CID"; rm -f "$TOKEN_FILE"' EXIT
+          CID="$(docker run -d --platform linux/arm64 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$TOKEN_FILE":/run/naij-token:ro \
+            -e NAIJ_MANAGER_API_TOKEN_FILE=/run/naij-token \
+            naij-play-manager:ci-arm64)"
+          for attempt in $(seq 1 45); do
+            if timeout 15s docker exec "$CID" python -c "import json, urllib.request; base='http://localhost:51123/nitro/api/v1/'; assert json.load(urllib.request.urlopen(base+'health', timeout=3))['status']=='healthy'; info=json.load(urllib.request.urlopen(base+'info', timeout=3)); assert info['api_version']==1; assert info['identity']=='naij-play-manager'"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs "$CID"
+          exit 1
 
   docker-integration:
     runs-on: ubuntu-latest
@@ -219,4 +240,11 @@ jobs:
       - name: Publish GitHub release after package publication
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag
+        shell: bash
+        run: |
+          NOTES="docs/release-notes-${GITHUB_REF_NAME#v}.md"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" --notes-file "$NOTES" --latest
+          else
+            gh release create "${GITHUB_REF_NAME}" --notes-file "$NOTES" --verify-tag --latest
+          fi

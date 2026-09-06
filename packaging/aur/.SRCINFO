@@ -1,0 +1,26 @@
+pkgbase = nitro-ai-judge-cli
+	pkgdesc = CLI client for judge.nitro-ai.org
+	pkgver = 3.2.0
+	pkgrel = 1
+	url = https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli
+	arch = any
+	license = MIT
+	license = OFL-1.1
+	makedepends = git
+	makedepends = python-build
+	makedepends = python-installer
+	makedepends = python-setuptools
+	makedepends = python-wheel
+	depends = python
+	depends = python-textual>=8.2
+	depends = python-textual<9
+	depends = python-aiohttp>=3.10
+	depends = python-aiohttp<4
+	optdepends = podman: preferred Play runtime
+	optdepends = podman-compose: Podman Compose provider
+	optdepends = docker: alternative Play runtime
+	optdepends = docker-compose: Docker Compose plugin
+	source = nitro-ai-judge-cli::git+https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli.git#tag=v3.2.0
+	sha256sums = SKIP
+
+pkgname = nitro-ai-judge-cli

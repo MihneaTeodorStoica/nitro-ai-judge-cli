@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import threading
+import tempfile
 import time
 import urllib.parse
 import zipfile
@@ -104,7 +105,12 @@ def filename_from_content_disposition(value: str) -> str | None:
 def task_file_category_from_href(
     org: str, comp: str, task_id: str, href: str
 ) -> str | None:
-    path = urllib.parse.urlparse(href).path
+    parsed = urllib.parse.urlparse(href)
+    if parsed.netloc and (parsed.scheme, parsed.netloc) != (urllib.parse.urlparse(BASE_URL).scheme, urllib.parse.urlparse(BASE_URL).netloc):
+        return None
+    if parsed.scheme and parsed.scheme not in {"http", "https"}:
+        return None
+    path = parsed.path
     parts = [part for part in path.split("/") if part]
     expected = ["competitions", org, comp, str(task_id)]
     if len(parts) != 6 or parts[:4] != expected or parts[5] != "download":
@@ -483,6 +489,14 @@ def cmd_task(
 def load_task_file_categories(
     cookies: tuple[str, str], bearer: str, org: str, comp: str, task_id: str
 ) -> list[str]:
+    categories = _discover_task_file_categories(cookies, bearer, org, comp, task_id)
+    update_cache("task_files", f"{org}/{comp}/{task_id}", [{"key": key} for key in categories])
+    return categories
+
+
+def _discover_task_file_categories(
+    cookies: tuple[str, str], bearer: str, org: str, comp: str, task_id: str
+) -> list[str]:
     categories: list[str] = []
     if task_has_statement(cookies, bearer, org, comp, task_id):
         categories.append("statement")
@@ -557,17 +571,20 @@ def download_task_file(
     task_id: str,
     category: str,
     links: dict[str, str] | None = None,
+    *, output: Any = None,
 ) -> tuple[int, bytes, dict[str, str]]:
+    options = {"output": output} if output is not None else {}
     category = normalize_task_file_category(category)
     link = (links or {}).get(category)
     if link:
-        return request(path=request_path_from_href(link), cookies=cookies, timeout=180)
+        return request(path=request_path_from_href(link), cookies=cookies, timeout=180, **options)
 
     status, body, headers = api_request_bytes(
         path=f"/organization/{org}/competition/{comp}/task/{task_id}/file",
         bearer=bearer,
         params={"file_category": category},
         timeout=180,
+        **options,
     )
     if status == 200 and not response_is_html(body, headers):
         return status, body, headers
@@ -576,6 +593,7 @@ def download_task_file(
         path=f"/competitions/{org}/{comp}/{task_id}/{category}/download",
         cookies=cookies,
         timeout=180,
+        **options,
     )
 
 def write_task_file(
@@ -626,7 +644,7 @@ def stream_task_file(
     else:
         links = load_task_file_links(cookies, org, comp, task_id)
         status, body, headers = download_task_file(
-            cookies, bearer, org, comp, task_id, category, links
+            cookies, bearer, org, comp, task_id, category, links, output=sys.stdout.buffer
         )
         if status != 200 or response_is_html(body, headers):
             preview = body.decode("utf-8", errors="replace")
@@ -708,20 +726,22 @@ def download_task_data(
 
     task_file_links = load_task_file_links(cookies, org, comp, task_id)
     results: list[dict[str, Any]] = []
-    for category in normalized_categories:
+    written: set[str] = set()
+    for category in dict.fromkeys(normalized_categories):
         spinner_stop: threading.Event | None = None
         spinner_thread: threading.Thread | None = None
         if show_progress:
             spinner_stop, spinner_thread = _start_spinner(
                 f"Downloading {category} ..."
             )
+        transfer = tempfile.TemporaryFile()
         try:
             if category == "statement":
                 body = task_statement_markdown(cookies, bearer, org, comp, task_id)
                 headers: dict[str, str] = {}
             else:
                 status, body, headers = download_task_file(
-                    cookies, bearer, org, comp, task_id, category, task_file_links
+                    cookies, bearer, org, comp, task_id, category, task_file_links, output=transfer
                 )
                 if status != 200 or response_is_html(body, headers):
                     if not explicit_categories:
@@ -730,19 +750,25 @@ def download_task_data(
                     raise RuntimeError(
                         f"Could not download {category}: HTTP {status}: {error_preview(preview)}"
                     )
-            path = write_task_file(
-                body,
-                headers,
-                category,
-                output_path,
-                output_dir,
-                force=force,
-            )
+            if body:
+                transfer.write(body)
+            size = transfer.tell()
+            transfer.seek(0)
+            preview = transfer.read(65536)
+            path = output_path or os.path.join(output_dir, task_file_name(category, headers, preview))
+            original_name = os.path.basename(path)
+            suffix = 1
+            while os.path.normcase(os.path.abspath(path)) in written:
+                path = os.path.join(output_dir, f"{category}-{suffix}-{original_name}")
+                suffix += 1
+            written.add(os.path.normcase(os.path.abspath(path)))
+            from .transfers import atomic_copy
+            atomic_copy(transfer, path, force=force)
             extracted_to, warning = extract_task_archive(path, force=force)
             result = {
                 "category": category,
                 "path": extracted_to or path,
-                "bytes": len(body),
+                "bytes": size,
             }
             if extracted_to:
                 result["extracted"] = True
@@ -750,6 +776,7 @@ def download_task_data(
                 result["warning"] = warning
             results.append(result)
         finally:
+            transfer.close()
             if spinner_stop is not None and spinner_thread is not None:
                 _stop_spinner(spinner_stop, spinner_thread)
     if not results:

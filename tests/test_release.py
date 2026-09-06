@@ -79,6 +79,10 @@ class ReleaseTests(unittest.TestCase):
         )
         self.assertIn("platforms: linux/arm64", manager_build)
         self.assertIn("tags: naij-play-manager:ci-arm64", manager_build)
+        self.assertIn("Start ARM64 entrypoint and verify health and identity", manager_build)
+        self.assertIn("base+'health'", manager_build)
+        self.assertIn("base+'info'", manager_build)
+        self.assertIn("docker rm -f", manager_build)
         self.assertIn(
             "docker run --rm --platform linux/arm64 --entrypoint docker "
             "naij-play-manager:ci-arm64 compose version",
@@ -96,8 +100,10 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("needs: [manager-publish, publish-pypi]", github_release)
         self.assertIn("contents: write", github_release)
         self.assertIn("GH_TOKEN: ${{ github.token }}", github_release)
+        self.assertIn('gh release view "${GITHUB_REF_NAME}"', github_release)
+        self.assertIn('gh release edit "${GITHUB_REF_NAME}"', github_release)
         self.assertIn(
-            'gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag',
+            'gh release create "${GITHUB_REF_NAME}" --notes-file "$NOTES" --verify-tag --latest',
             github_release,
         )
 

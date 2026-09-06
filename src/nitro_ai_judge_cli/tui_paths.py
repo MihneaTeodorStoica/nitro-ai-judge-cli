@@ -9,6 +9,10 @@ from textual.suggester import Suggester
 from textual.widgets import Input
 
 
+def expand_path(value: str) -> str:
+    return os.path.normpath(os.path.expanduser(value))
+
+
 def complete_path(value: str, *, directories_only: bool = False) -> str | None:
     if not value or "\x00" in value:
         return None

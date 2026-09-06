@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MihneaTeodorStoica/nitro-ai-judge-cli/blob/main/docs/json-output.schema.json",
+  "title": "NAIJ CLI JSON output, schema version 1",
+  "type": "object",
+  "required": ["schema_version", "kind", "cached", "data"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"enum": ["contests", "contest", "tasks", "task", "submissions", "submission", "use", "doctor", "play.status", "play.ps", "play.ls", "play.operations", "play.manager.status"]},
+    "cached": {"type": "boolean"},
+    "data": {"type": ["object", "array"]}
+  },
+  "$defs": {
+    "task": {"type": "object", "required": ["id", "number"], "properties": {"id": {"type": ["string", "integer"]}, "number": {"type": "integer", "minimum": 1}}},
+    "submission": {"type": "object", "required": ["mode"], "properties": {"mode": {"enum": ["partial", "complete"]}}}
+  },
+  "allOf": [
+    {"if": {"properties": {"kind": {"const": "tasks"}}}, "then": {"properties": {"data": {"type": "array", "items": {"$ref": "#/$defs/task"}}}}},
+    {"if": {"properties": {"kind": {"const": "task"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/task"}}}},
+    {"if": {"properties": {"kind": {"const": "submissions"}}}, "then": {"properties": {"data": {"type": "array", "items": {"$ref": "#/$defs/submission"}}}}},
+    {"if": {"properties": {"kind": {"const": "submission"}}}, "then": {"properties": {"data": {"$ref": "#/$defs/submission"}}}}
+  ]
+}

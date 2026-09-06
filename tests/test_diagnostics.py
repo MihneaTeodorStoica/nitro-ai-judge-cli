@@ -33,6 +33,8 @@ class DiagnosticsTests(unittest.TestCase):
             patch.object(diagnostics.shutil, "which", return_value=None)
         )
         self.run = stack.enter_context(patch.object(diagnostics.subprocess, "run"))
+        stack.enter_context(patch.object(diagnostics, "api_reachability", return_value={"reachable": False, "authenticated": "not tested"}))
+        stack.enter_context(patch.object(diagnostics, "docker_context", return_value="missing"))
         stack.enter_context(
             patch.object(
                 diagnostics,
@@ -117,9 +119,9 @@ class DiagnosticsTests(unittest.TestCase):
         (self.home / ".naij").mkdir()
         secrets = ["private-token", "private-cookie", "private-user", "private-password",
                    "private-query", "private-fragment"]
-        Path(state.inspect_state_paths().credentials).write_text(
-            json.dumps({"token": secrets[0], "cookies": secrets[1]}), encoding="utf-8"
-        )
+        # Inject sensitive fixtures in memory instead of persisting clear-text
+        # secrets, even in a temporary test directory.
+        loaded = {"access_token": secrets[0], "cookies": secrets[1]}
         runtime = SimpleNamespace(
             api_base_url="https://private-user:private-password@example.test/api"
                          "?token=private-query#private-fragment",
@@ -128,6 +130,7 @@ class DiagnosticsTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
             patch.object(diagnostics, "runtime", return_value=runtime),
+            patch.object(diagnostics, "_json_state", side_effect=lambda path: ("present", loaded) if path.name == "state.json" else ("missing", {})),
             contextlib.redirect_stdout(stdout),
             contextlib.redirect_stderr(stderr),
         ):

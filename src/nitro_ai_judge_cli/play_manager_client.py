@@ -145,10 +145,14 @@ class ManagerClient:
             {key: value for key, value in options.items() if value is not None},
         )
 
-    def operations(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        value = self._request(
-            "GET", f"{BASE_PATH}/api/v1/operations?limit={int(limit)}"
-        )
+    def operation_history(self, *, limit: int = 50, offset: int = 0, competition: str | None = None, status: str | None = None, action: str | None = None) -> dict[str, Any]:
+        query = urllib.parse.urlencode({key: value for key, value in {
+            "limit": limit, "offset": offset, "competition": competition, "status": status, "action": action,
+        }.items() if value is not None})
+        return self._request("GET", f"{BASE_PATH}/api/v1/operations?{query}")
+
+    def operations(self, *, limit: int = 50, **filters: Any) -> list[dict[str, Any]]:
+        value = self.operation_history(limit=limit, **filters)
         return [item for item in value.get("operations", []) if isinstance(item, dict)]
 
     def operation(self, operation_id: str) -> dict[str, Any]:
@@ -253,6 +257,28 @@ class ManagerClient:
             ) from exc
         except (OSError, urllib.error.URLError) as exc:
             raise ManagerConnectionError("Play log stream disconnected") from exc
+
+    async def async_follow_logs(self, org: str, competition: str):
+        """Cancellation closes the response/session immediately; no blocking worker."""
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=None, sock_connect=self.timeout)
+        url = f"{self.base_url}{BASE_PATH}/api/v1/competitions/{org}/{competition}/logs/follow"
+        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/x-ndjson"}
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, allow_redirects=False) as response:
+                if response.status != 200:
+                    raw = await response.content.read(65536)
+                    try:
+                        error = json.loads(raw).get("error", {})
+                    except (ValueError, AttributeError):
+                        error = {}
+                    raise ManagerConnectionError(str(error.get("message") or f"Play log stream HTTP {response.status}"))
+                async for raw in response.content:
+                    event = json.loads(raw)
+                    line = event.get("line")
+                    if not isinstance(line, str):
+                        raise ManagerConnectionError("Invalid Play log stream record")
+                    yield line[:8192]
 
     def put_credentials(self, credentials: dict[str, Any]) -> dict[str, Any]:
         return self._request("PUT", f"{BASE_PATH}/api/v1/credentials", credentials)

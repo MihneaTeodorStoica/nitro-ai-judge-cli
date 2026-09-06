@@ -95,7 +95,8 @@ class OperationsHandlerTests(unittest.IsolatedAsyncioTestCase):
                         "created_at": 10,
                         "updated_at": 20,
                     }
-                ]
+                ],
+                "next_offset": None,
             },
         )
 

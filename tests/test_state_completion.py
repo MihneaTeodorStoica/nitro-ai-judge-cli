@@ -480,7 +480,7 @@ class CompletionTests(unittest.TestCase):
 
     def test_tasks_and_submission_slots_advance_one_level_at_a_time(self) -> None:
         context = self.context()
-        self.assertEqual(completion.candidates(["tasks", ""], context), ["--help"])
+        self.assertEqual(completion.candidates(["tasks", ""], context), ["--help", "--json"])
         self.assertEqual(
             completion.candidates(["tasks", "b"], context), ["Beta/Cup"]
         )
@@ -542,7 +542,7 @@ class CompletionTests(unittest.TestCase):
         )
         self.assertEqual(
             completion.candidates(["play", "ps", ""], context),
-            ["--help", "--yes"],
+            ["--help", "--json", "--yes"],
         )
         self.assertEqual(
             completion.candidates(["play", "logs", ""], context),

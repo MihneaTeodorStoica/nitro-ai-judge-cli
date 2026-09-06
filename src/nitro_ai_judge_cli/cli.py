@@ -399,9 +399,10 @@ def _dispatch_offline(args: argparse.Namespace) -> int:
 def _cmd_doctor(_: argparse.Namespace) -> int:
     from .diagnostics import collect_diagnostics
 
-    for key, value in collect_diagnostics().items():
+    report = collect_diagnostics()
+    for key, value in report.items():
         print(f"{key}: {value}")
-    return 0
+    return int(report["exit_status"])
 
 
 def _cmd_cache(args: argparse.Namespace) -> int:
@@ -559,6 +560,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     internal = sub.add_parser("__complete", add_help=False)
     internal.add_argument("words", nargs=argparse.REMAINDER)
+    from .json_output import add_options
+    add_options(parser)
     return parser
 
 
@@ -765,6 +768,9 @@ def main(argv: list[str] | None = None) -> int:
         configure_state_dir(args.state_dir)
     configure_runtime(args.api_url, args.submission_proxy)
 
+    if getattr(args, "json", False):
+        from .json_output import dispatch
+        return dispatch(args)
     if args.cmd == "__complete":
         words = list(args.words)
         if words and words[0] == "--":
@@ -846,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_tui()
     if args.cmd == "play":
-        if args.play_action in {"manager", "ls", "operations"}:
+        if args.play_action in {"manager", "ls", "operations", "operation"}:
             return cmd_play(args)
         context = load_context()
         inherited = not getattr(args, "competition", None)

@@ -1,61 +1,59 @@
-# Local issue-fix pass
+# 3.2.0 issue-fix status
 
-This is an **incomplete implementation proposed for 3.2.0**, not a claim that all
-GitHub acceptance criteria are satisfied. The branch is being submitted for review;
-no release publication or issue closure is implied. Issue numbers refer to
-`MihneaTeodorStoica/nitro-ai-judge-cli`.
+Proposed in PR #92; no release publication or issue closure is implied.
+“Locally verified” means the listed regression checks pass, not that every
+platform, network failure, or release-publication scenario was exercised.
 
-## Changes with local verification
+## Implemented and locally verified
 
-| Issue | Local result |
+| Issues | Result and coverage |
 | --- | --- |
-| #13 | Workflow creates a GitHub Release after successful GHCR/PyPI publication. Historical releases are not backfilled. |
-| #15 | PEP 639 SPDX expression and license-file metadata added; wheel/sdist contents verified. |
-| #16 | Inter/Lexend OFL texts and font attribution included in distributions. |
-| #38 | `edge` publication follows `main` instead of the deleted feature branch. CI has not run remotely. |
-| #39 | Already implemented in the starting checkout; existing keyboard-detail-scroll Pilot test passes. |
-| #40 | Offline submission rendering no longer discards cached rows for lack of a session username. |
-| #41 | Download and Help use scrollable modal containers. Full minimum-size acceptance still needs dedicated coverage. |
-| #42 | Download warnings are shown instead of a success-only status. |
-| #43 | Proxy-mode submission form requires source before dismissal. |
-| #44 | Query-scoped caches retain author/page/page-size/mode, canonical cache is protected, cached records preserve scoring mode, legacy complete-only labels infer complete scores. |
-| #45 | TUI download/submission paths expand `~`; relative paths and spaces remain intact. |
-| #46 | Rerender preserves selected ID/mode and loaded detail instead of resetting the highlight to the first row. |
-| #48 | `naij play ls` lists managed environments without contest context. Further column/filter requirements remain to be checked. |
-| #56 | Mutating Play commands accept `--detach`, print the operation ID and follow-up commands, and do not wait or falsely report completion. `--open` conflicts with detach. |
-| #60 | `download-data -c CATEGORY -o -` writes raw bytes without extraction; authentication/download diagnostics go to stderr. It still buffers the response (see #23). |
-| #66 | TUI path fields offer bounded, nonblocking inline filesystem suggestions; Right accepts at the end, Tab still changes focus. Pilot acceptance coverage is still limited. |
-| #71 | Contextual final-selection button and `f` action require confirmation, use the shared API helper, and guard stale selection. Tests cover cancel, success, and API failure. |
-| #72 | Selected pending submissions resume one deduplicated watcher. Selection/view/authentication invalidation stops it. Tests cover deduplication and view-exit cleanup; the full acceptance matrix is not yet covered. |
+| #15, #16 | SPDX metadata, MIT/OFL texts, and font attribution; fresh wheel/sdist builds, Twine, and actual artifact-content checks pass. |
+| #23, #60 | 64 KiB transfer reads, replayable file multipart bodies, disk-spooled/atomic downloads, response limits, raw stdout. Tests exercise a 64 MiB bounded sink, replay, changed files, truncation, redirect/error sinks, atomic failure, and large HTML pages. Real large-network/RSS benchmarking remains unperformed. |
+| #39, #40 | Keyboard feedback scrolling and offline cached rows; existing Pilot regressions pass. |
+| #41, #42, #43 | Scrollable Help/Download dialogs (including 70×20 Pilot coverage), visible archive warnings, proxy-required source validation before dismissal. |
+| #44, #46 | Query-scoped submission cache identity/scoring mode; selection/detail consistency across rerender. |
+| #45, #66 | Tilde expansion, native path normalization, bounded nonblocking suggestions; Pilot verifies Right acceptance and Tab focus. Windows mixed-separator regression fixed; confirmation awaits new remote CI. |
+| #48 | Manager-wide inventory with image/workspace/health/container/operation columns, clean empty state, and no selected-contest requirement. |
+| #51 | Schema-versioned read-only JSON for entity/context/Play/doctor commands; explicit task number/ID and submission mode. Checked-in JSON Schema, command-matrix validation, offline/auth/error/progress tests. |
+| #56 | Detached mutations return accepted/reused operation IDs without waiting, and print exact-ID wait/cancel commands; parser, completion, and command regressions. |
+| #58 | Read-only platform/config-source/permission/expiry diagnostics, bounded unauthenticated API and manager probes, Compose/context checks, aggregate exit status. Existing corrupt/offline/redaction/no-write tests pass. |
+| #61 | Public OpenAPI 3.1 endpoint plus checked-in JSON; auth/CSRF/Origin, errors, 202 receipts, streams, and protocol enums. Validator, copy-equality, and complete registered-route parity tests pass. |
+| #62 | Safe category discovery, cache-backed native completion, same-origin/task-scope validation, hardened filenames, per-download collision avoidance. |
+| #63 | Authenticated bounded history with pagination, competition/action/status filters, timestamps/duration, bounded redacted failure summaries, and exact-ID detail/wait/cancel CLI. Store/API/client/CLI/auth/redaction tests pass. |
+| #67 | TUI per-competition operation progress and exact-ID cancellation; Pilot covers progress plus completion/cancel race, and existing cancellation/shutdown regression passes. |
+| #68 | Cancellable async log stream, follow/pause/resume, 2,000-line retention, conditional autoscroll and view-exit cleanup. Pilot covers bounded history, disconnect/retry, pause/resume and leaving Play. |
+| #69, #70 | At most five primary context footer actions; pane/view Help. Local case-insensitive Overview search with F3/Shift+F3, match scrolling, no-match/escape behavior; normal and compact Pilot checks. |
+| #71 | Confirmed final-selection controls with stale-selection guards; cancel/success/API-failure tests pass. |
+| #72 | Deduplicated polling of selected pending submissions, stopped on selection/view/auth/context/app invalidation; existing selected-watch/view-exit/terminal-feedback tests pass. |
 
-## Partial work — do not close these issues yet
+## External work or unverified release acceptance — keep open
 
-| Issue | Implemented | Remaining |
+| Issue | In this branch | Still required |
 | --- | --- | --- |
-| #14 | AUR maintainer handoff in `docs/aur-packaging.md`. | Real PKGBUILD/.SRCINFO update in the AUR repository and clean Arch chroot testing. |
-| #58 | Read-only `naij doctor`: redacted API URL, state/credential/config presence, permissions, bounded Compose probes; no migration/chmod/login. | Credential freshness and fuller live manager identity/health diagnostics. |
-| #62 | Safe new category keys can be discovered/requested; traversal-style keys rejected and output filenames hardened. | Dynamic native completion and complete malicious-link/collision/fallback coverage. |
-| #63 | Bounded recent-operation summary endpoint, client, and `naij play operations --limit N`. | Filtering/pagination and dashboard integration. |
-| #64 | ARM64 image build and executable/import smoke tests added before publication. | Actual ARM64 manager startup/health/integration smoke and CI execution. |
-| #69 | Help text describes the current pane/view and correct confirmation/path behavior. | Fully context-sensitive footer bindings and keymap coverage. |
-| #70 | Overview `/` performs local case-insensitive search and displays counts/excerpts. | Next/previous navigation, scrolling matches into view, dedicated Pilot coverage. |
-
-## Not implemented
-
-- #23: bounded-memory uploads/downloads and replay-safe streaming transport.
-- #51: stable JSON output contract for all read-only commands.
-- #61: complete, valid OpenAPI contract and route/schema parity tests.
-- #65: actual screenshots and keyboard recording. Synthetic mockups were not retained.
-- #67: complete TUI Play progress/cancellation controls.
-- #68: TUI Play log follow/pause mode.
+| #13 | Idempotent GitHub Release creation/update after successful publication, using checked-in notes. Dry-run-first `scripts/backfill-releases.sh` verifies successful historical workflow SHAs. | Authorized historical backfill and a successful tagged release run. No remote releases were created by this pass. |
+| #14 | Concrete `packaging/aur/PKGBUILD` and `.SRCINFO`, dependency/license/alias handoff. Shell syntax passes. | Publish upstream tag, regenerate metadata with Arch tooling, clean-chroot install/upgrade smoke, and AUR maintainer publication. |
+| #38 | Edge workflow now targets `main`, not the deleted branch. | Merge and observe actual GHCR `edge` publication. PR publication jobs intentionally skip. |
+| #64 | CI builds ARM64, checks executables/imports, then starts the real entrypoint and verifies health/identity under QEMU with scoped cleanup. | New remote ARM64 job must pass. Local host has rootless Podman and an existing manager, not the isolated Docker/QEMU CI environment; neither was modified for this check. |
+| #65 | Visually reviewed real 120×34 TUI PNG, 10-second keyboard GIF, 1440×900 manager PNG; fictional fixtures, under 1 MiB combined. Reproducible offline capture script and future-tag README links. | Real 60–90 second notebook/runtime MP4, GitHub Release attachment, and post-tag GitHub/PyPI link/rendering verification. No fake end-to-end video is claimed. |
 
 ## Verification
 
-- Full host unittest suite: **329 tests, four skips**, passing on this host.
-- `python -m build`: wheel and sdist build successfully.
-- `python -m twine check dist/*`: passes.
-- `NAIJ_VERIFY_DIST=1 python -m unittest tests.test_packaging -v`: three passing checks, including actual packaged licenses/fonts.
-- No Docker integration, ARM64 runtime, Arch chroot, or remote CI run was performed.
+- `python -m compileall -q src tests scripts`: passes.
+- Full host unittest suite: **348 tests, four skips**, passing.
+- OpenAPI validator and JSON Schema command-matrix checks ran (not skipped).
+- Fresh 3.2.0 wheel/sdist build and Twine checks: pass.
+- `NAIJ_VERIFY_DIST=1 python -m unittest tests.test_packaging -v`: three passes.
+- `uv lock --check`, shell syntax, and `git diff --check`: pass.
+- PNGs were opened for visual review; GIF duration/dimensions are generated
+  explicitly by the capture script. These use fixtures, not live containers.
 
-The skipped tests include opt-in Docker integration and the ordinary-suite
-artifact check; the latter was also run explicitly against freshly built artifacts.
+The ordinary-suite skips cover opt-in integration/artifact checks. Artifact
+checks were subsequently run explicitly. Before this follow-up, remote native
+Docker, Ubuntu/macOS, and build jobs passed, while Windows path assertions and
+a CodeQL clear-text test fixture failed. Both findings are addressed here; the
+new PR run is authoritative and remains to be checked after push.
+
+Subagents supplied independent additions earlier in the pass. Further delegation
+is blocked by the harness's hard delegation-tree request/agent limit; no attempt
+was made to bypass it.

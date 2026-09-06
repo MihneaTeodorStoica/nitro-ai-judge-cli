@@ -12,7 +12,7 @@ from .state import load_context, selected_contest, selected_submission, selected
 COMMANDS = (
     "login", "logout", "tui", "contests", "tasks", "task", "download-data", "play", "submit",
     "submissions", "submission", "set-final", "unset-final", "use", "ls",
-    "show", "cache", "completion",
+    "show", "cache", "completion", "doctor",
 )
 SHELL_COMMANDS = (
     "help", "cd", "pwd", "l", "h", "?", "q", "quit", "exit", "..",
@@ -21,7 +21,7 @@ SHELL_COMMANDS = (
 GLOBAL_OPTIONS = ("--api-url", "--submission-proxy", "--state-dir", "-V", "--version", "--help")
 PLAY_ACTIONS = (
     "play", "pull", "start", "stop", "restart", "recreate",
-    "delete-container", "delete-image", "delete-workspace", "logs", "status", "ps", "cancel", "open", "manager",
+    "delete-container", "delete-image", "delete-workspace", "logs", "status", "ps", "cancel", "open", "manager", "ls", "operations", "operation",
 )
 MANAGER_ACTIONS = (
     "install", "update", "status", "open", "start", "stop", "restart",
@@ -109,6 +109,17 @@ VALUE_OPTIONS = {
     "submission": {"--org", "--comp", "--task-id", "--wait-timeout"},
 }
 REPEATABLE_OPTION_GROUPS = {"download-data": {"-c"}}
+
+for _command in ("contests", "tasks", "task", "submissions", "submission", "use", "ls", "show"):
+    OPTION_GROUPS[_command] = (*OPTION_GROUPS[_command], ("--json",))
+OPTION_GROUPS["doctor"] = (("--json",), ("--help",))
+for _action in ("play", "pull", "start", "stop", "restart", "recreate", "delete-container", "delete-image", "delete-workspace"):
+    PLAY_OPTION_GROUPS[_action] = (*PLAY_OPTION_GROUPS[_action], ("--detach",))
+for _action in ("status", "ps", "ls", "operations", "manager-status"):
+    PLAY_OPTION_GROUPS[_action] = (*PLAY_OPTION_GROUPS.get(_action, (("--help",),)), ("--json",))
+PLAY_OPTION_GROUPS["operations"] += (("--limit",), ("--offset",), ("--competition",), ("--status",), ("--action",))
+PLAY_OPTION_GROUPS["operation"] = (("--wait",), ("--cancel",), ("--help",))
+VALUE_OPTIONS["play"].update({"--limit", "--offset", "--competition", "--status", "--action"})
 
 
 def _matches(candidates: Iterable[str], prefix: str) -> list[str]:
@@ -278,7 +289,8 @@ def _selected_option_values(words: list[str], aliases: set[str]) -> set[str]:
 
 
 def _value_candidates(
-    command: str, words: list[str], prefix: str, action: str | None = None
+    command: str, words: list[str], prefix: str, action: str | None = None,
+    category_values: Iterable[str] = TASK_FILE_CATEGORIES,
 ) -> list[str] | None:
     if not words:
         return None
@@ -292,7 +304,7 @@ def _value_candidates(
     if previous in {"--category", "-c"}:
         selected = _selected_option_values(words[:-1], {"--category", "-c"})
         return _matches(
-            (item for item in TASK_FILE_CATEGORIES if item.casefold() not in selected),
+            (item for item in category_values if item.casefold() not in selected),
             prefix,
         )
     if previous in {"--mode", "-m"}:
@@ -415,7 +427,7 @@ def _fill_cache(
         return context
     try:
         from .api import ensure_fresh_state, get_auth
-        from .contests import load_competitions, load_tasks
+        from .contests import load_competitions, load_tasks, load_task_file_categories
         from .state import load_state, update_cache
         from .submissions import get_username, load_submissions
 
@@ -439,6 +451,8 @@ def _fill_cache(
             )
         elif kind == "tasks":
             items = load_tasks(cookies, bearer, target[0], target[1])
+        elif kind == "task_files":
+            items = [{"key": key} for key in load_task_file_categories(cookies, bearer, *target)]
         else:
             items = []
             for mode in ("partial", "complete"):
@@ -556,7 +570,27 @@ def candidates(
         return []
 
     action = _play_completion_action(arguments) if command == "play" else None
-    value_candidates = _value_candidates(command, arguments, prefix, action)
+    category_values = list(TASK_FILE_CATEGORIES)
+    if command == "download-data" and arguments and arguments[-1] in {"--category", "-c"}:
+        try:
+            from .cli import _resolve_task_target
+            from .contests import find_task, normalize_task_file_category
+            org, comp, task_id, inherited = _resolve_task_target(_positionals(command, arguments[:-1]), context)
+            if not inherited:
+                if not supplied_context:
+                    context = _fill_cache(context, ("tasks", f"{org}/{comp}", (org, comp)))
+                task = find_task(context.get("cache", {}).get("tasks", {}).get(f"{org}/{comp}", []), task_id)
+                if not task:
+                    raise ValueError("No task")
+                task_id = str(task["id"])
+            key = f"{org}/{comp}/{task_id}"
+            if not supplied_context:
+                context = _fill_cache(context, ("task_files", key, (org, comp, task_id)))
+            for item in context.get("cache", {}).get("task_files", {}).get(key, []):
+                category_values.append(normalize_task_file_category(item["key"]))
+        except (ValueError, KeyError, TypeError):
+            pass
+    value_candidates = _value_candidates(command, arguments, prefix, action, category_values)
     if value_candidates is not None:
         return value_candidates
     if prefix.startswith("-"):
@@ -606,6 +640,8 @@ def candidates(
                 )
             return _matches(MANAGER_ACTIONS, prefix)
         action = base_action
+        if action in {"ls", "operations", "operation"}:
+            return _remaining_options(command, arguments, prefix, action)
         if contest_words:
             return _remaining_options(command, arguments, prefix, action)
         if prefix:

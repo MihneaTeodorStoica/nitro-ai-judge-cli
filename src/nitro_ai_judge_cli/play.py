@@ -54,6 +54,7 @@ PLAY_ACTIONS = {
     "logs",
     "ls",
     "operations",
+    "operation",
     "ps",
     "status",
     "cancel",
@@ -193,6 +194,8 @@ def perform_play_action(
             print(f"Operation queued: {operation_id}")
             print(f"Status: naij play status {org}/{competition}")
             print(f"Cancel: naij play cancel {org}/{competition}")
+            print(f"Wait: naij play operation {operation_id} --wait")
+            print(f"Cancel this operation: naij play operation {operation_id} --cancel")
         return {"operation_id": operation_id, "detached": True}
     spinner = None
     progress = None if quiet else _progress
@@ -266,20 +269,23 @@ def load_play_ls(*, client: ManagerClient | None = None) -> list[dict[str, Any]]
 def format_operations(items: list[dict[str, Any]]) -> str:
     if not items:
         return "No Play operations"
-    lines = ["ID  COMPETITION  ACTION  STATUS  UPDATED"]
+    lines = ["ID  COMPETITION  ACTION  STATUS  STAGE  CREATED  STARTED  FINISHED  DURATION"]
     for item in items:
         lines.append(
             f"{item.get('id', '?')}  {item.get('competition', '?')}  "
             f"{item.get('action', '?')}  {item.get('status', '?')}  "
-            f"{item.get('updated_at', '?')}"
+            f"{item.get('stage', '?')}  {item.get('created_at', '?')}  "
+            f"{item.get('started_at', '-')}  {item.get('finished_at', '-')}  {item.get('duration', '-')}s"
         )
+        if item.get("failure"):
+            lines.append(f"  {item['failure'].get('type')}: {item['failure'].get('message')}")
     return "\n".join(lines)
 
 
 def format_play_ls(items: list[dict[str, Any]]) -> str:
     if not items:
         return "No managed Play environments"
-    lines = ["REFERENCE  WORKSPACE  HEALTH  OPERATION"]
+    lines = ["REFERENCE  IMAGE  WORKSPACE  HEALTH  CONTAINERS  OPERATION"]
     for item in items:
         operation = item.get("operation") if isinstance(item.get("operation"), dict) else {}
         operation_label = str(operation.get("status") or "-") if operation else "-"
@@ -287,8 +293,10 @@ def format_play_ls(items: list[dict[str, Any]]) -> str:
             operation_label = f"{operation_label}:{operation.get('id')}"
         lines.append(
             f"{item.get('reference', '?')}  "
+            f"{item.get('image_state', 'unknown')}  "
             f"{item.get('workspace_state', 'unknown')}  "
             f"{item.get('service_health', 'unknown')}  "
+            f"{item.get('containers', 0)}  "
             f"{operation_label}"
         )
     return "\n".join(lines)
@@ -546,13 +554,27 @@ def cmd_play(args: argparse.Namespace) -> int:
     try:
         if args.play_action == "manager":
             return cmd_manager(args)
-        if args.play_action in {"ls", "operations"}:
+        if args.play_action in {"ls", "operations", "operation"}:
             client = ManagerClient.from_state()
             verify_manager_info(client.info())
             if args.play_action == "ls":
                 print(format_play_ls(load_play_ls(client=client)))
+            elif args.play_action == "operations":
+                filters = {key: value for key, value in {
+                    "offset": args.offset, "competition": args.reference, "status": args.status, "action": args.action,
+                }.items() if value}
+                print(format_operations(client.operations(limit=args.limit, **filters)))
             else:
-                print(format_operations(client.operations(limit=args.limit)))
+                if args.cancel:
+                    operation = client.cancel(args.operation_id)
+                elif args.wait:
+                    operation = client.wait_operation(args.operation_id, timeout=None, progress=_progress)
+                else:
+                    operation = client.operation(args.operation_id)
+                print(format_operations([operation]))
+                print(operation.get("message") or "")
+                if operation.get("error"):
+                    print(operation["error"].get("message") or "Operation failed")
             return 0
         org, competition = parse_competition_ref(args.competition)
         _legacy_port_guidance(args)
@@ -756,7 +778,16 @@ def populate_play_actions(actions: argparse._SubParsersAction) -> None:
             command.add_argument("--detach", action="store_true", help="Queue without waiting")
     actions.add_parser("ls", help="List all managed competition environments")
     operations = actions.add_parser("operations", help="List recent Play operations")
-    operations.add_argument("--limit", type=int, default=20)
+    operations.add_argument("--limit", type=positive_seconds, default=20)
+    operations.add_argument("--offset", type=int, default=0)
+    operations.add_argument("--competition", dest="reference")
+    operations.add_argument("--action", choices=sorted(PLAY_ACTIONS - {"up", "down", "ls", "operations", "operation", "status", "ps", "cancel", "open", "logs", "manager"}))
+    operations.add_argument("--status", choices=("queued", "running", "complete", "failed", "cancelled", "interrupted"))
+    operation = actions.add_parser("operation", help="Inspect, wait for, or cancel an exact operation ID")
+    operation.add_argument("operation_id")
+    operation_actions = operation.add_mutually_exclusive_group()
+    operation_actions.add_argument("--wait", action="store_true")
+    operation_actions.add_argument("--cancel", action="store_true")
     down = actions.add_parser("down", help="Deprecated alias for delete-container")
     _competition_argument(down)
     down.add_argument("--detach", action="store_true", help="Queue without waiting")

@@ -118,7 +118,9 @@ while dragging when the terminal's normal text selection is needed.
 Path fields expand `~` and offer inline filesystem suggestions: Right at the end
 accepts a suggestion, while Tab keeps its normal focus behavior. In Submissions,
 `f` or the contextual final-selection button sets/unsets final after confirmation.
-Overview `/` searches the loaded statement locally and shows matching excerpts.
+Overview `/` searches locally; F3/Shift+F3 jump between matches and Escape
+restores the statement. Play `c` cancels the displayed operation; `g` follows or
+pauses logs, retaining the last 2,000 lines. Leaving Play closes the log stream.
 
 The TUI loads cached contests, tasks, and submissions before connecting. A
 temporary network failure or expired login leaves that cached content visible
@@ -135,9 +137,19 @@ reports that freshness is unavailable. Inspect or invalidate stale entries with
 `naij cache status` and `naij cache clear [contests|tasks|submissions|all]`;
 clearing cache never changes credentials or the current selection.
 
-Release screenshots and the keyboard walkthrough will be added under
-`docs/assets/` with the `v3.0.0` release capture; the recording contract is in
-[`docs/assets/README.md`](docs/assets/README.md).
+### Screenshots and keyboard walkthrough
+
+These are real UI captures using fictional offline fixtures, not live submissions.
+The release-pinned images below resolve after `v3.2.0` is published; branch previews
+and reproduction instructions are in [`docs/assets/README.md`](docs/assets/README.md).
+
+![Three-pane NAIJ TUI overview](https://raw.githubusercontent.com/MihneaTeodorStoica/nitro-ai-judge-cli/v3.2.0/docs/assets/tui-overview.png)
+
+![Ten-second keyboard navigation and contextual help](https://raw.githubusercontent.com/MihneaTeodorStoica/nitro-ai-judge-cli/v3.2.0/docs/assets/tui-keyboard.gif)
+
+![Play manager with running, stopped, and missing environments](https://raw.githubusercontent.com/MihneaTeodorStoica/nitro-ai-judge-cli/v3.2.0/docs/assets/play-manager.png)
+
+The longer notebook/runtime MP4 is still pending capture and release attachment.
 
 ### Help wanted: TUI improvements
 
@@ -215,8 +227,10 @@ naij download-data -c statement -o - | less
 
 `-o -` writes exactly one category as raw bytes to stdout without extraction.
 Diagnostics go to stderr; interactive terminal output requires `--force`.
-Safe server-advertised category keys are also accepted. Transfers still buffer
-file contents in memory.
+Safe server-advertised category keys are also accepted and cached for completion.
+Uploads are replayable chunked multipart streams; downloads spool to disk and
+atomically replace destination files. In-memory JSON/HTML responses have a
+32 MiB safety limit. Binary stdout remains raw and never extracts archives.
 
 Download options:
 
@@ -287,7 +301,9 @@ naij play manager install --yes
 naij play algolymp/algolymp-preojia-ix-x
 naij play status algolymp/algolymp-preojia-ix-x
 naij play ls
-naij play operations --limit 20
+naij play operations --limit 20 --offset 0 --status failed --action pull
+naij play operation OPERATION_ID --wait
+naij play operation OPERATION_ID --cancel
 naij play algolymp/algolymp-preojia-ix-x --detach
 naij play cancel algolymp/algolymp-preojia-ix-x
 naij play logs algolymp/algolymp-preojia-ix-x
@@ -303,7 +319,9 @@ naij play delete-workspace algolymp/algolymp-preojia-ix-x --force
 
 `play ls` and `play operations` need no selected competition. `--detach` queues
 a mutation and prints its operation ID and status/cancel commands without waiting;
-it cannot be combined with `--open`.
+it cannot be combined with `--open`. History supports `--competition ORG/COMP`,
+`--action`, `--status`, `--limit` (1–200), and `--offset`, and includes timings
+and bounded redacted failure summaries. JSON history includes `next_offset`.
 
 The competition can be omitted when saved context supplies it. `naij play
 ORG/COMP` means `play play ORG/COMP`; the old `up` and `down` spellings remain
@@ -459,10 +477,34 @@ Completion resolves the current argument slot and shows only its next useful lev
 
 ## Diagnostics
 
-`naij doctor` shows read-only local diagnostics: effective API configuration
-(with URL credentials/query omitted), state permissions, credential/config-file
-presence, and bounded container Compose checks. It does not repair, migrate,
-change permissions, refresh tokens, or start containers.
+`naij doctor` reports platform/version, configuration precedence, permissions,
+credential-expiry hints, unauthenticated API reachability, Compose/Docker context,
+and installed manager identity/health/compatibility. It returns nonzero for failed
+checks and never repairs, migrates, changes permissions, refreshes tokens, or
+starts containers. Secrets and URL credentials/queries are omitted.
+
+## JSON output
+
+Read-only commands accept `--json`: `contests`, `tasks`, `task`, `submissions`,
+`submission`, `use` (without selection/clear), `ls`, `show`, `doctor`, `play status`,
+`play ps`, `play ls`, `play operations`, and `play manager status`.
+
+```bash
+naij tasks --json
+naij ls --offline --json
+naij play ls --json
+```
+
+Success writes one document with `schema_version: 1`, `kind`, `cached`, and `data`.
+Task `id` is the backend identifier; `number` is the one-based display position.
+Submissions carry explicit `mode` (`partial`/`complete`); Play records retain
+structured state fields. `ls`/`show` report their resolved entity kind. `data` is
+an array for lists, an object for details/context, or a paginated object for
+operation history. Unknown backend fields may be added; consumers should ignore
+them. The envelope and required normalized fields follow
+[`docs/json-output.schema.json`](docs/json-output.schema.json).
+Warnings/progress go to stderr. Failures return nonzero with diagnostics on stderr
+and no partial JSON; doctor may return a complete report with a nonzero status.
 
 ## State and security
 

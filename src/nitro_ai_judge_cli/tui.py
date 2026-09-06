@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from collections import deque
+import re
+import time
+from dataclasses import dataclass, replace
 import os
 import threading
 from typing import Any, Callable
@@ -72,7 +75,7 @@ from .submissions import (
     submission_score,
 )
 from .ui import format_datetime_ms
-from .tui_paths import PathInput
+from .tui_paths import PathInput, expand_path
 
 
 PENDING_STATES = {"created", "in queue", "pending", "processing", "queued", "running"}
@@ -268,7 +271,8 @@ async def _finish_dom_update(update: Any) -> None:
 
 
 async def _wait_for_play_operation(
-    client: ManagerClient, operation_id: str, *, timeout: float | None
+    client: ManagerClient, operation_id: str, *, timeout: float | None,
+    progress: Callable[[dict], None] | None = None,
 ) -> dict[str, Any]:
     stop_event = threading.Event()
     loop = asyncio.get_running_loop()
@@ -280,6 +284,7 @@ async def _wait_for_play_operation(
                 operation_id,
                 timeout=timeout,
                 stop_event=stop_event,
+                **({"progress": lambda event: loop.call_soon_threadsafe(progress, event)} if progress else {}),
             )
         except BaseException as exc:
             callback = lambda exc=exc: (
@@ -547,11 +552,10 @@ class DownloadScreen(ModalScreen[DownloadRequest | None]):
         categories = list(
             self.query_one("#download-categories", SelectionList).selected
         )
-        directory = os.path.expanduser(
-            self.query_one("#download-directory", Input).value.strip()
-        )
+        directory_value = self.query_one("#download-directory", Input).value.strip()
+        directory = expand_path(directory_value) if directory_value else ""
         output_value = self.query_one("#download-output", Input).value.strip()
-        output = os.path.expanduser(output_value) if output_value else None
+        output = expand_path(output_value) if output_value else None
         error = self.query_one("#download-error", Static)
         if not categories:
             error.update("[!] Select at least one category.")
@@ -640,8 +644,8 @@ class SubmitScreen(ModalScreen[SubmitRequest | None]):
             return
         self.dismiss(
             SubmitRequest(
-                os.path.expanduser(output),
-                os.path.expanduser(source) if source else None,
+                expand_path(output),
+                expand_path(source) if source else None,
                 self.query_one("#submit-note", Input).value,
             )
         )
@@ -772,6 +776,10 @@ class NitroTUI(App[int]):
         Binding("slash", "filter", "Filter"),
         Binding("r", "refresh", "Refresh"),
         Binding("f", "toggle_final", "Toggle final", show=False),
+        Binding("c", "cancel_play", "Cancel operation", show=False),
+        Binding("g", "toggle_logs", "Follow/pause logs", show=False),
+        Binding("f3", "search_next(1)", "Next match", show=False),
+        Binding("shift+f3", "search_next(-1)", "Previous match", show=False),
         Binding("enter", "open", "Open"),
         Binding("escape", "back", "Back", show=False),
         Binding("h", "left", "Left", show=False),
@@ -968,10 +976,17 @@ class NitroTUI(App[int]):
         min-width: 18;
     }
 
+    #play-log-scroll { height: 12; display: none; }
+    #play-log-scroll.-open { display: block; }
+    #play-operation { height: auto; }
+
     #submission-detail-scroll {
         height: 1fr;
         padding-top: 1;
     }
+
+    #overview-search-result { display: none; height: auto; }
+    #overview-search-result.-open { display: block; }
 
     #overview-filter {
         display: none;
@@ -1174,6 +1189,11 @@ class NitroTUI(App[int]):
         self._login_open = False
         self.manager_client = manager_client
         self.play_snapshot: dict[str, Any] = {}
+        self.play_operations: dict[tuple[str, str], dict] = {}
+        self.log_lines: deque[str] = deque(maxlen=2000)
+        self.logs_following = False
+        self.log_generation = 0
+        self.log_reference: tuple[str, str] | None = None
 
     def _manager(self) -> ManagerClient:
         if self.manager_client is None:
@@ -1202,7 +1222,8 @@ class NitroTUI(App[int]):
                 )
                 with ContentSwitcher(initial="view-overview", id="task-views"):
                     with VerticalScroll(id="view-overview", classes="task-view"):
-                        yield Input(placeholder="Search statement", id="overview-filter")
+                        yield Input(placeholder="Search statement · F3 next · Shift+F3 previous · Esc close", id="overview-filter")
+                        yield Static("", id="overview-search-result", markup=False)
                         yield Markdown(
                             "Select a contest to begin.",
                             id="overview",
@@ -1237,6 +1258,12 @@ class NitroTUI(App[int]):
                                 markup=False,
                             )
                     with VerticalScroll(id="view-play", classes="task-view"):
+                        with Horizontal(classes="dialog-actions"):
+                            yield Button("Cancel operation", id="play-cancel", disabled=True)
+                            yield Button("Follow logs", id="play-follow")
+                        yield Static("", id="play-operation", markup=False)
+                        with VerticalScroll(id="play-log-scroll"):
+                            yield Static("", id="play-live-logs", markup=False)
                         yield Static(
                             "Select a contest to inspect local play.",
                             id="play-content",
@@ -1576,6 +1603,9 @@ class NitroTUI(App[int]):
         self.query_one("#overview", Markdown).update(text)
 
     def open_contest(self, contest: dict[str, Any]) -> None:
+        self._pause_logs()
+        self.query_one("#play-log-scroll", VerticalScroll).remove_class("-open")
+        self.query_one("#play-operation", Static).update("")
         self.contest_generation += 1
         self._clear_task_context()
         self.play_snapshot = {}
@@ -1622,25 +1652,12 @@ class NitroTUI(App[int]):
             or "No statement is available."
         ).strip()
         markdown = statement if statement.startswith("#") else f"# {title}\n\n{statement}"
-        query = self.query_one("#overview-filter", Input).value.strip()
-        if query:
-            matches = [
-                line
-                for line in markdown.splitlines()
-                if query.casefold() in line.casefold()
-            ]
-            safe_query = query.replace("`", "'")
-            if matches:
-                excerpts = "\n".join(f"> {line}" for line in matches[:20])
-                markdown = (
-                    f"> {len(matches)} match(es) for `{safe_query}`.\n\n"
-                    f"{excerpts}\n\n---\n\n{markdown}"
-                )
-            else:
-                markdown = f"> No matches for `{safe_query}`.\n\n---\n\n{markdown}"
+        self.overview_source = markdown
         self.query_one("#overview", Markdown).update(markdown)
+        self._update_overview_search()
 
     def _render_view_nav(self) -> None:
+        self._refresh_context_bindings()
         final = self.query_one("#submission-final", Button)
         final.disabled = not bool((self.current_submission or {}).get("id"))
         final.label = "Unset final" if (self.current_submission or {}).get("isFinal") else "Set final"
@@ -1677,6 +1694,10 @@ class NitroTUI(App[int]):
         self._render_view_nav()
         if self.active_view != 3:
             self.workers.cancel_group(self, "submission-poll")
+        if self.active_view != 4:
+            self._pause_logs()
+        elif self.current_contest:
+            self._render_play_operation()
         if self.active_view == 3:
             self._resume_pending_submission_poll_current()
             self.render_submissions_worker()
@@ -1883,14 +1904,51 @@ class NitroTUI(App[int]):
     def submission_filter_changed(self) -> None:
         self.render_submissions_worker()
 
+    def _update_overview_search(self) -> None:
+        field = self.query_one("#overview-filter", Input)
+        source = getattr(self, "overview_source", "")
+        query = field.value
+        result = self.query_one("#overview-search-result", Static)
+        active = bool(query and field.has_class("-open"))
+        result.set_class(active, "-open")
+        self.query_one("#overview", Markdown).display = not active
+        self.overview_matches = list(re.finditer(re.escape(query), source, re.IGNORECASE)) if query else []
+        if not active:
+            return
+        count = len(self.overview_matches)
+        self.overview_match_index = getattr(self, "overview_match_index", 0) % max(1, count)
+        text = Text(source)
+        for index, match in enumerate(self.overview_matches):
+            text.stylize("bold reverse" if index == self.overview_match_index else "underline", match.start(), match.end())
+        result.update(text)
+        self.set_status(f"Match {self.overview_match_index + 1 if count else 0}/{count} · F3 next · Shift+F3 previous · Esc closes")
+        if count:
+            self.call_after_refresh(self._scroll_overview_match)
+
+    def _scroll_overview_match(self) -> None:
+        from textual.geometry import Region
+        if not getattr(self, "overview_matches", []):
+            return
+        match = self.overview_matches[self.overview_match_index]
+        result = self.query_one("#overview-search-result", Static)
+        prefix = Text(self.overview_source[:match.start()])
+        row = max(0, len(prefix.wrap(self.console, max(1, result.content_region.width))) - 1)
+        self.query_one("#view-overview", VerticalScroll).scroll_to_region(
+            Region(0, result.virtual_region.y + row, 1, 1), animate=False, top=True, immediate=True,
+        )
+
+    def action_search_next(self, direction: int) -> None:
+        if self.active_view == 1 and self.query_one("#overview-filter", Input).has_class("-open"):
+            self.overview_match_index = getattr(self, "overview_match_index", 0) + direction
+            self._update_overview_search()
+
     @on(Input.Changed, "#overview-filter")
     def overview_filter_changed(self) -> None:
-        if self.current_task:
-            self._render_task_overview(self.current_task)
+        self.overview_match_index = 0
+        self._update_overview_search()
 
     @on(Input.Submitted, "#overview-filter")
     def overview_filter_submitted(self) -> None:
-        self.query_one("#overview-filter", Input).remove_class("-open")
         self.query_one("#view-overview", VerticalScroll).focus()
 
     @on(Input.Submitted, "#submission-filter")
@@ -2174,6 +2232,9 @@ class NitroTUI(App[int]):
             if not self._contest_is_current(generation, org, comp):
                 return
             self.play_snapshot = snapshot
+            if isinstance(snapshot.get("operation"), dict):
+                self.play_operations[(org, comp)] = snapshot["operation"]
+            self._render_play_operation()
             status = {
                 **snapshot,
                 "state": snapshot.get("workspace_state") or "missing",
@@ -2223,6 +2284,7 @@ class NitroTUI(App[int]):
 
     def action_filter(self) -> None:
         if self.active_pane == "right" and self.active_view == 1:
+            self.overview_original_scroll = self.query_one("#view-overview", VerticalScroll).scroll_y
             field = self.query_one("#overview-filter", Input)
         elif self.active_pane == "right" and self.active_view == 3:
             field = self.query_one("#submission-filter", Input)
@@ -2265,6 +2327,15 @@ class NitroTUI(App[int]):
             self.action_play_menu()
 
     def action_back(self) -> None:
+        field = self.query_one("#overview-filter", Input)
+        if self.active_view == 1 and field.has_class("-open"):
+            field.remove_class("-open")
+            field.value = ""
+            self._update_overview_search()
+            viewport = self.query_one("#view-overview", VerticalScroll)
+            viewport.focus()
+            self.call_after_refresh(viewport.scroll_to, y=getattr(self, "overview_original_scroll", 0), animate=False)
+            return
         focused = self.focused
         if isinstance(focused, Input):
             focused.value = ""
@@ -2379,6 +2450,7 @@ class NitroTUI(App[int]):
         else:
             self._focus_submission_detail()
     def _focus_active(self) -> None:
+        self._refresh_context_bindings()
         if self.layout_mode == "too-small":
             return
         if self.active_pane == "contests":
@@ -2447,6 +2519,26 @@ class NitroTUI(App[int]):
             if self.active_view == 2:
                 self.refresh_categories()
 
+    def context_actions(self) -> list[str]:
+        if self.active_pane in {"contests", "tasks"}:
+            return ["filter", "open", "refresh", "help", "quit"]
+        if self.active_view == 1:
+            return ["filter", "download", "refresh", "help", "quit"] if self.current_task else ["help", "quit"]
+        if self.active_view == 2:
+            return ["download", "refresh", "help", "quit"] if self.current_task else ["help", "quit"]
+        if self.active_view == 3:
+            return (["toggle_final"] if self.current_submission else []) + ["submit", "filter", "help", "quit"]
+        operation = self.play_operations.get(contest_ref(self.current_contest), {}) if self.current_contest else {}
+        return (["cancel_play"] if operation.get("status") in {"queued", "running"} else ["refresh"]) + ["toggle_logs", "play_menu", "help", "quit"]
+
+    def _refresh_context_bindings(self) -> None:
+        visible = set(self.context_actions())
+        primary_keys = {binding.key for binding in self.BINDINGS if binding.action in visible and binding.key != "ctrl+d"}
+        # Only presentation changes: hidden bindings still work in other panes.
+        for key, bindings in self._bindings.key_to_bindings.items():
+            self._bindings.key_to_bindings[key] = [replace(binding, show=binding.action in visible and key in primary_keys) for binding in bindings]
+        self.refresh_bindings()
+
     def action_help(self) -> None:
         if self.active_pane == "contests":
             context = "Contests: / filters contests; Enter opens the highlighted competition."
@@ -2454,12 +2546,13 @@ class NitroTUI(App[int]):
             context = "Tasks: / filters tasks; Enter opens the highlighted task."
         else:
             context = (
-                "Overview: / searches the loaded statement locally.",
+                "Overview: / searches locally; F3/Shift+F3 move matches; Esc restores the statement.",
                 "Data: d opens downloads; Space selects categories in the form.",
                 "Submissions: / filters rows; Tab toggles list/detail; j/k scroll feedback; f toggles final selection with confirmation.",
-                "Play: p opens lifecycle actions; r refreshes status and recent logs.",
+                "Play: p actions; c cancels the displayed active operation; g follows/pauses logs; r refreshes status.",
             )[self.active_view - 1]
-        self.push_screen(HelpScreen(context))
+        hints = [f"{binding.key}: {binding.description}" for binding in self.BINDINGS if binding.action in self.context_actions() and binding.key != "ctrl+d"]
+        self.push_screen(HelpScreen(context + "\n" + " · ".join(hints)))
 
     def action_download(self) -> None:
         if not self.current_task:
@@ -2732,6 +2825,103 @@ class NitroTUI(App[int]):
                 return
         await self.perform_play_action(action)
 
+    def _render_play_operation(self) -> None:
+        reference = contest_ref(self.current_contest) if self.current_contest else None
+        operation = self.play_operations.get(reference, {})
+        cancellable = operation.get("status") in {"queued", "running"}
+        self.query_one("#play-cancel", Button).disabled = not cancellable
+        if not operation:
+            self.query_one("#play-operation", Static).update("")
+            return
+        elapsed = max(0, time.time() - float(operation.get("created_at") or time.time()))
+        error = operation.get("error") or {}
+        text = (f"Operation {operation.get('id')} · {operation.get('action')} · {operation.get('status')}\n"
+                f"Stage: {operation.get('stage') or '?'} · {int(elapsed)}s\n{operation.get('message') or ''}")
+        if error:
+            text += "\n" + str(error.get("message") or error) + "\n" + "\n".join(error.get("logs") or [])
+        self.query_one("#play-operation", Static).update(text)
+        self._refresh_context_bindings()
+
+    @on(Button.Pressed, "#play-cancel")
+    def cancel_play_clicked(self) -> None:
+        self.action_cancel_play()
+
+    def action_cancel_play(self) -> None:
+        if self.active_view == 4 and self.current_contest:
+            reference = contest_ref(self.current_contest)
+            operation = self.play_operations.get(reference, {})
+            if operation.get("status") in {"queued", "running"}:
+                self.cancel_play_operation(reference, str(operation["id"]))
+
+    @work(group="play-cancel", exclusive=True)
+    async def cancel_play_operation(self, reference: tuple[str, str], operation_id: str) -> None:
+        try:
+            operation = await asyncio.to_thread(self._manager().cancel, operation_id)
+            self.play_operations[reference] = operation
+            if self.current_contest and contest_ref(self.current_contest) == reference:
+                self._render_play_operation()
+                self.set_status(f"Operation {operation_id}: {operation.get('status')}")
+        except Exception as exc:
+            if self.current_contest and contest_ref(self.current_contest) == reference:
+                self.set_status(f"Could not cancel operation: {exc}", "error")
+
+    def _pause_logs(self) -> None:
+        self.log_generation += 1
+        self.logs_following = False
+        self.workers.cancel_group(self, "play-log-follow")
+        self.query_one("#play-follow", Button).label = "Follow logs"
+
+    @on(Button.Pressed, "#play-follow")
+    def follow_logs_clicked(self) -> None:
+        self.action_toggle_logs()
+
+    def action_toggle_logs(self) -> None:
+        if self.active_view != 4 or not self.current_contest:
+            return
+        if self.logs_following:
+            self._pause_logs()
+            self.set_status("Logs paused · g resumes")
+        else:
+            reference = contest_ref(self.current_contest)
+            if self.log_reference != reference:
+                self.log_lines.clear()
+                self.log_reference = reference
+            self.logs_following = True
+            self.log_generation += 1
+            self.query_one("#play-follow", Button).label = "Pause logs"
+            self.query_one("#play-log-scroll", VerticalScroll).add_class("-open")
+            self.follow_play_logs(reference, self.log_generation)
+
+    @work(group="play-log-follow", exclusive=True)
+    async def follow_play_logs(self, reference: tuple[str, str], generation: int) -> None:
+        replay = list(self.log_lines)[-200:]
+        replay_index = 0
+        try:
+            async for line in self._manager().async_follow_logs(*reference):
+                if not self.current_contest or contest_ref(self.current_contest) != reference or self.active_view != 4:
+                    return
+                if replay_index < len(replay) and line == replay[replay_index]:
+                    replay_index += 1
+                    continue
+                replay_index = len(replay)
+                viewport = self.query_one("#play-log-scroll", VerticalScroll)
+                bottom = viewport.scroll_y >= viewport.max_scroll_y - 1
+                self.log_lines.append(line[:8192])
+                self.query_one("#play-live-logs", Static).update("\n".join(self.log_lines))
+                if bottom:
+                    self.call_after_refresh(viewport.scroll_end, animate=False)
+            if generation == self.log_generation:
+                self.set_status("Log stream ended · g retries", "error")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if generation == self.log_generation:
+                self.set_status(f"Log stream disconnected: {exc} · g retries", "error")
+        finally:
+            if generation == self.log_generation and self.is_mounted:
+                self.logs_following = False
+                self.query_one("#play-follow", Button).label = "Follow logs"
+
     async def perform_play_action(self, action: str) -> None:
         if not self.current_contest:
             return
@@ -2740,6 +2930,10 @@ class NitroTUI(App[int]):
         self.active_pane = "right"
         self._show_active_view()
         self.set_status(f"Play {action}…")
+        reference = (org, comp)
+        accepted_id = None
+        def selected() -> bool:
+            return bool(self.current_contest and contest_ref(self.current_contest) == reference)
         try:
             client = self._manager()
             if action == "logs":
@@ -2773,15 +2967,37 @@ class NitroTUI(App[int]):
                     pull="missing" if action in {"play", "recreate"} else None,
                     wait_timeout=120 if action in {"play", "recreate"} else None,
                 )
-                await _wait_for_play_operation(
-                    client,
-                    str(accepted["operation_id"]),
+                accepted_id = str(accepted["operation_id"])
+                operation = accepted.get("operation") or {"id": accepted_id, "action": action, "status": "queued", "stage": "queued", "created_at": time.time()}
+                self.play_operations[reference] = operation
+                if selected():
+                    self._render_play_operation()
+                def progress(event: dict) -> None:
+                    if self.play_operations.get(reference, {}).get("id") != accepted_id:
+                        return
+                    self.play_operations[reference].update(status="running", stage=event.get("stage"), message=event.get("message"))
+                    if selected():
+                        self._render_play_operation()
+                result = await _wait_for_play_operation(
+                    client, accepted_id,
                     timeout=None if action in {"pull", "play", "recreate"} else 600,
+                    progress=progress,
                 )
-            self.set_status(f"Play {action} completed.", "success")
-            self.refresh_play_status()
+                self.play_operations[reference] = {**operation, **result, "status": result.get("status") or "complete"}
+            if selected():
+                self._render_play_operation()
+                self.set_status(f"Play {action} completed.", "success")
+                self.refresh_play_status()
         except Exception as exc:
-            self.set_status(f"Play {action} failed: {exc}", "error")
+            if accepted_id:
+                # Read the terminal record: cancellation can race completion.
+                try:
+                    self.play_operations[reference] = await asyncio.to_thread(client.operation, accepted_id)
+                except Exception:
+                    self.play_operations[reference].update(status="failed", message=str(exc))
+            if selected():
+                self._render_play_operation()
+                self.set_status(f"Play {action} failed: {exc}", "error")
 
 
 def run_tui() -> int:

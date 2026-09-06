@@ -89,28 +89,18 @@ def create_submission(
         )
         return _submission_response(status, body)
 
-    with open(output_path, "rb") as f:
-        output_bytes = f.read()
-
-    files = {
-        "output": (os.path.basename(output_path), output_bytes, "text/csv"),
-    }
+    from .transfers import Multipart
+    files = {"output": (output_path, "text/csv")}
     if source_path:
-        with open(source_path, "rb") as f:
-            source_bytes = f.read()
-        files["sourceCode"] = (
-            os.path.basename(source_path),
-            source_bytes,
-            "text/x-python",
-        )
-
-    data, boundary = build_multipart({"note": note}, files)
+        files["sourceCode"] = (source_path, "text/x-python")
+    data = Multipart({"note": note}, files)
+    boundary = data.boundary
     status, body, _ = api_request_text(
         path=f"/organization/{org}/competition/{comp}/task/{task_id}/submit",
         bearer=bearer,
         method="POST",
         data=data,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Content-Length": str(data.length)},
         timeout=300,
     )
     return _submission_response(status, body)
