@@ -790,6 +790,23 @@ async def _run_operation(
         _publish_refresh(app)
 
 
+async def operations(request: web.Request) -> web.Response:
+    try:
+        limit = int(request.query.get("limit", "50"))
+    except ValueError:
+        raise WireError(ErrorType.INVALID_REQUEST.value, "limit must be an integer", status=400)
+    if not 1 <= limit <= 200:
+        raise WireError(ErrorType.INVALID_REQUEST.value, "limit must be between 1 and 200", status=400)
+    # History is a summary, not a dump of saved options, results or log buffers.
+    keys = ("id", "competition", "action", "status", "stage", "message", "created_at", "updated_at")
+    values = [
+        {key: redact(value) if isinstance(value, str) else value
+         for key in keys if (value := item.get(key)) is not None}
+        for item in request.app["store"].operations(limit=limit)
+    ]
+    return web.json_response({"operations": values})
+
+
 async def operation_detail(request: web.Request) -> web.Response:
     value = request.app["store"].operation(request.match_info["operation_id"])
     if value is None:
@@ -1324,6 +1341,7 @@ def create_app(
         competition_action,
     )
     router.add_get(f"{BASE_PATH}/api/v1/competitions/{{org}}/{{competition}}/logs", logs)
+    router.add_get(f"{BASE_PATH}/api/v1/operations", operations)
     router.add_get(
         f"{BASE_PATH}/api/v1/competitions/{{org}}/{{competition}}/logs/follow",
         logs_follow,

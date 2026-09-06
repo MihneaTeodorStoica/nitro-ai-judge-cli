@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext, redirect_stdout
 import sys
 from typing import Any
 
@@ -12,7 +13,6 @@ from .completion import candidates as completion_candidates, script as completio
 from .config import (
     DEFAULT_PAGE_SIZE,
     DEFAULT_SUBMISSION_PAGE_SIZE,
-    TASK_FILE_CATEGORIES,
 )
 from .contests import (
     cmd_contests,
@@ -396,6 +396,14 @@ def _dispatch_offline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor(_: argparse.Namespace) -> int:
+    from .diagnostics import collect_diagnostics
+
+    for key, value in collect_diagnostics().items():
+        print(f"{key}: {value}")
+    return 0
+
+
 def _cmd_cache(args: argparse.Namespace) -> int:
     if args.cache_action == "clear":
         clear_cache(args.kind)
@@ -467,6 +475,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("logout", help="Remove saved CLI credentials")
 
     sub.add_parser("tui", help="Open the full-screen contest cockpit")
+    sub.add_parser("doctor", help="Show read-only diagnostics")
 
     contests = sub.add_parser("contests", help="List competitions")
     contests.add_argument("--page", type=int, default=1)
@@ -482,9 +491,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     download = sub.add_parser("download-data", help="Download task data files")
     download.add_argument("targets", nargs="*", help="[competition] [task]")
-    download.add_argument("-c", "--category", action="append", choices=sorted(TASK_FILE_CATEGORIES))
+    download.add_argument("-c", "--category", action="append", metavar="CATEGORY",
+                          help="Built-in or server-advertised category key (see --list)")
     download.add_argument("-d", "--out-dir")
-    download.add_argument("-o", "--output", help="Output path for one category")
+    download.add_argument("-o", "--output", help="Output path for one category; - writes raw bytes to stdout")
     download.add_argument("-f", "--force", action="store_true", help="Overwrite files")
     download.add_argument(
         "--list",
@@ -553,7 +563,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _dispatch_authenticated(args: argparse.Namespace) -> int:
-    auth_data = require_auth()
+    stream_stdout = args.cmd == "download-data" and args.output == "-"
+    if stream_stdout and (not args.category or len(args.category) != 1):
+        print("Error: --output - requires exactly one --category", file=sys.stderr)
+        return 1
+    with redirect_stdout(sys.stderr) if stream_stdout else nullcontext():
+        auth_data = require_auth()
     if not auth_data:
         return 1
     state, cookies, bearer = auth_data
@@ -583,6 +598,9 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
         try:
             org, comp, task_id, inherited = _resolve_task_target(args.targets, context)
         except ValueError as exc:
+            if stream_stdout:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
             return _context_error(exc)
         display_task_id = selected_task_number(context) or task_id
         if not inherited:
@@ -591,7 +609,7 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
                     cookies, bearer, org, comp, task_id
                 )
             except RuntimeError as exc:
-                print(f"Error: {exc}")
+                print(f"Error: {exc}", file=sys.stderr if stream_stdout else sys.stdout)
                 return 1
         if args.cmd == "task":
             display = (
@@ -627,7 +645,10 @@ def _dispatch_authenticated(args: argparse.Namespace) -> int:
                 mode=args.mode,
             )
         if result and inherited:
-            print("Hint: refresh the selection with `naij use ORG/COMP TASK`.")
+            print(
+                "Hint: refresh the selection with `naij use ORG/COMP TASK`.",
+                file=sys.stderr if stream_stdout else sys.stdout,
+            )
         return result
 
     if args.cmd == "submission":
@@ -768,8 +789,10 @@ def main(argv: list[str] | None = None) -> int:
             if enabled
         ]
         if conflicts:
-            print(f"Error: --list cannot be used with {', '.join(conflicts)}")
+            print(f"Error: --list cannot be used with {', '.join(conflicts)}", file=sys.stderr if args.output == "-" else sys.stdout)
             return 1
+    if args.cmd == "doctor":
+        return _cmd_doctor(args)
     if args.cmd == "cache":
         return _cmd_cache(args)
     if args.cmd in {"ls", "show"} and args.offline:
@@ -823,7 +846,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_tui()
     if args.cmd == "play":
-        if args.play_action == "manager":
+        if args.play_action in {"manager", "ls", "operations"}:
             return cmd_play(args)
         context = load_context()
         inherited = not getattr(args, "competition", None)

@@ -115,6 +115,11 @@ selection, scrolling, tab switching, and field focus are supported as an
 optional convenience; every workflow remains keyboard-accessible. Hold Shift
 while dragging when the terminal's normal text selection is needed.
 
+Path fields expand `~` and offer inline filesystem suggestions: Right at the end
+accepts a suggestion, while Tab keeps its normal focus behavior. In Submissions,
+`f` or the contextual final-selection button sets/unsets final after confirmation.
+Overview `/` searches the loaded statement locally and shows matching excerpts.
+
 The TUI loads cached contests, tasks, and submissions before connecting. A
 temporary network failure or expired login leaves that cached content visible
 with one recovery message at the bottom. When a request detects stale
@@ -205,7 +210,13 @@ naij download-data --list
 naij download-data -c statement -o TASK.md
 naij download-data -c train_data -c test_data -d data
 naij download-data -c test_data -o test_data.zip -f
+naij download-data -c statement -o - | less
 ```
+
+`-o -` writes exactly one category as raw bytes to stdout without extraction.
+Diagnostics go to stderr; interactive terminal output requires `--force`.
+Safe server-advertised category keys are also accepted. Transfers still buffer
+file contents in memory.
 
 Download options:
 
@@ -275,6 +286,9 @@ Install the manager once, then start a competition:
 naij play manager install --yes
 naij play algolymp/algolymp-preojia-ix-x
 naij play status algolymp/algolymp-preojia-ix-x
+naij play ls
+naij play operations --limit 20
+naij play algolymp/algolymp-preojia-ix-x --detach
 naij play cancel algolymp/algolymp-preojia-ix-x
 naij play logs algolymp/algolymp-preojia-ix-x
 naij play logs -f algolymp/algolymp-preojia-ix-x
@@ -286,6 +300,10 @@ naij play delete-container algolymp/algolymp-preojia-ix-x
 naij play delete-image algolymp/algolymp-preojia-ix-x
 naij play delete-workspace algolymp/algolymp-preojia-ix-x --force
 ```
+
+`play ls` and `play operations` need no selected competition. `--detach` queues
+a mutation and prints its operation ID and status/cancel commands without waiting;
+it cannot be combined with `--open`.
 
 The competition can be omitted when saved context supplies it. `naij play
 ORG/COMP` means `play play ORG/COMP`; the old `up` and `down` spellings remain
@@ -439,6 +457,13 @@ naij completion powershell | Out-String | Invoke-Expression
 
 Completion resolves the current argument slot and shows only its next useful level. It does not mix options with an available contest, task, or submission; typing `-` switches immediately to remaining valid options. It lazily fetches a missing entity list on the first relevant Tab and saves it in the context cache. It fetches all competitions, only the selected or supplied competition's tasks, or the current user's partial and complete submissions for the selected task. Existing cache entries, including empty lists, suppress later requests; authentication and network failures stay silent and can be retried on a later Tab. Bare native completion remains command-only, while a blank interactive prompt offers only entities at the current context level.
 
+## Diagnostics
+
+`naij doctor` shows read-only local diagnostics: effective API configuration
+(with URL credentials/query omitted), state permissions, credential/config-file
+presence, and bounded container Compose checks. It does not repair, migrate,
+change permissions, refresh tokens, or start containers.
+
 ## State and security
 
 By default, Nitro AI Judge stores credentials, context, shell history, and play data under `~/.naij/`:
@@ -485,9 +510,9 @@ internally.
 The release workflow runs host tests on Linux, Windows, and macOS, builds and
 checks the CLI, builds the manager, and runs Linux Docker integration. A release
 tag must exactly match `pyproject.toml`. It refuses an existing immutable GHCR
-tag, publishes `linux/amd64` and `linux/arm64`, then updates the matching `3.0`
+tag, publishes `linux/amd64` and `linux/arm64`, then updates the matching minor-version
 and `stable` tags. PyPI publication happens only after GHCR succeeds. The
-development branch publishes `edge`; neither the workflow nor installer uses
+`main` branch publishes `edge`; neither the workflow nor installer uses
 `latest`.
 
 Recommended release checks:
@@ -500,7 +525,7 @@ python3 -m twine check dist/*
 docker build -f manager/Dockerfile -t naij-play-manager:dev .
 NAIJ_DOCKER_INTEGRATION=1 NAIJ_PLAY_MANAGER_IMAGE=naij-play-manager:dev \
   python3 -m unittest discover -s tests/integration -v
-git tag v3.1.5
+git tag v3.2.0
 git push origin main --tags
 ```
 

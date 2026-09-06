@@ -52,6 +52,8 @@ PLAY_ACTIONS = {
     "delete-image",
     "delete-workspace",
     "logs",
+    "ls",
+    "operations",
     "ps",
     "status",
     "cancel",
@@ -180,11 +182,18 @@ def perform_play_action(
     quiet: bool = False,
     yes: bool = False,
     timeout: float | None = 600,
+    detach: bool = False,
     **options: Any,
 ) -> dict[str, Any]:
     client = client or _client(yes=yes)
     accepted = client.action(org, competition, action, **options)
     operation_id = str(accepted["operation_id"])
+    if detach:
+        if not quiet:
+            print(f"Operation queued: {operation_id}")
+            print(f"Status: naij play status {org}/{competition}")
+            print(f"Cancel: naij play cancel {org}/{competition}")
+        return {"operation_id": operation_id, "detached": True}
     spinner = None
     progress = None if quiet else _progress
     if not quiet and sys.stdout.isatty():
@@ -248,6 +257,41 @@ def load_play_logs(
     client: ManagerClient | None = None,
 ) -> str:
     return str((client or _client(interactive=False)).logs(org, competition, tail=tail).get("logs") or "")
+
+
+def load_play_ls(*, client: ManagerClient | None = None) -> list[dict[str, Any]]:
+    return (client or _client(interactive=False)).competitions()
+
+
+def format_operations(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "No Play operations"
+    lines = ["ID  COMPETITION  ACTION  STATUS  UPDATED"]
+    for item in items:
+        lines.append(
+            f"{item.get('id', '?')}  {item.get('competition', '?')}  "
+            f"{item.get('action', '?')}  {item.get('status', '?')}  "
+            f"{item.get('updated_at', '?')}"
+        )
+    return "\n".join(lines)
+
+
+def format_play_ls(items: list[dict[str, Any]]) -> str:
+    if not items:
+        return "No managed Play environments"
+    lines = ["REFERENCE  WORKSPACE  HEALTH  OPERATION"]
+    for item in items:
+        operation = item.get("operation") if isinstance(item.get("operation"), dict) else {}
+        operation_label = str(operation.get("status") or "-") if operation else "-"
+        if operation and operation.get("id"):
+            operation_label = f"{operation_label}:{operation.get('id')}"
+        lines.append(
+            f"{item.get('reference', '?')}  "
+            f"{item.get('workspace_state', 'unknown')}  "
+            f"{item.get('service_health', 'unknown')}  "
+            f"{operation_label}"
+        )
+    return "\n".join(lines)
 
 
 def load_play_ps(
@@ -320,8 +364,13 @@ def cmd_play_stop(
     *,
     quiet: bool = False,
     client: ManagerClient | None = None,
+    detach: bool = False,
 ) -> int:
-    perform_play_action(org, competition, "stop", client=client, quiet=quiet)
+    result = perform_play_action(
+        org, competition, "stop", client=client, quiet=quiet, detach=detach
+    )
+    if result.get("detached"):
+        return 0
     if not quiet:
         print(f"Stopped {org}/{competition}")
     return 0
@@ -367,6 +416,7 @@ def cmd_play_down(
     force: bool = False,
     quiet: bool = False,
     client: ManagerClient | None = None,
+    detach: bool = False,
 ) -> int:
     action = "delete-workspace" if volumes else "delete-container"
     options: dict[str, Any] = {}
@@ -382,7 +432,17 @@ def cmd_play_down(
                 print("Aborted.")
                 return 1
             options["confirm_ref"] = reference
-    perform_play_action(org, competition, action, client=client, quiet=quiet, **options)
+    result = perform_play_action(
+        org,
+        competition,
+        action,
+        client=client,
+        quiet=quiet,
+        detach=detach,
+        **options,
+    )
+    if result.get("detached"):
+        return 0
     if not quiet:
         print(
             f"Deleted workspace for {reference}"
@@ -486,6 +546,14 @@ def cmd_play(args: argparse.Namespace) -> int:
     try:
         if args.play_action == "manager":
             return cmd_manager(args)
+        if args.play_action in {"ls", "operations"}:
+            client = ManagerClient.from_state()
+            verify_manager_info(client.info())
+            if args.play_action == "ls":
+                print(format_play_ls(load_play_ls(client=client)))
+            else:
+                print(format_operations(client.operations(limit=args.limit)))
+            return 0
         org, competition = parse_competition_ref(args.competition)
         _legacy_port_guidance(args)
         action = args.play_action
@@ -512,6 +580,7 @@ def cmd_play(args: argparse.Namespace) -> int:
                 volumes=args.volumes,
                 force=args.force,
                 client=client,
+                detach=getattr(args, "detach", False),
             )
         elif action == "ps":
             print(load_play_ps(org, competition, client=client))
@@ -542,7 +611,9 @@ def cmd_play(args: argparse.Namespace) -> int:
             print(url)
             return 0
         if action == "delete-container":
-            return cmd_play_down(org, competition, client=client)
+            return cmd_play_down(
+                org, competition, client=client, detach=getattr(args, "detach", False)
+            )
         if action == "delete-workspace":
             return cmd_play_down(
                 org,
@@ -550,9 +621,12 @@ def cmd_play(args: argparse.Namespace) -> int:
                 volumes=True,
                 force=args.force,
                 client=client,
+                detach=getattr(args, "detach", False),
             )
         if action == "stop":
-            return cmd_play_stop(org, competition, client=client)
+            return cmd_play_stop(
+                org, competition, client=client, detach=getattr(args, "detach", False)
+            )
         options = {
             "pull": getattr(args, "pull", None),
             "gpu": getattr(args, "gpu", None),
@@ -569,8 +643,11 @@ def cmd_play(args: argparse.Namespace) -> int:
                 if action in {"pull", "play", "up", "recreate"}
                 else getattr(args, "wait_timeout", PLAY_WAIT_TIMEOUT) + 240
             ),
+            detach=getattr(args, "detach", False),
             **options,
         )
+        if result.get("detached"):
+            return 0
         if action in {"play", "recreate"} and getattr(args, "open", False):
             url = client.open_info(org, competition)["jupyter_url"]
             webbrowser.open(str(url))
@@ -641,7 +718,9 @@ def _runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(gpu=None)
     parser.add_argument("--pull", choices=("always", "missing", "never"), default="missing")
     parser.add_argument("--wait-timeout", type=positive_seconds, default=PLAY_WAIT_TIMEOUT)
-    parser.add_argument("--open", action="store_true", help="Open Jupyter after the operation")
+    completion = parser.add_mutually_exclusive_group()
+    completion.add_argument("--open", action="store_true", help="Open Jupyter after the operation")
+    completion.add_argument("--detach", action="store_true", help="Queue the operation without waiting")
     parser.add_argument("--port", type=play_port, help=argparse.SUPPRESS)
     parser.add_argument("--proxy-port", type=play_port, help=argparse.SUPPRESS)
     parser.add_argument("--bind", help=argparse.SUPPRESS)
@@ -659,6 +738,7 @@ def populate_play_actions(actions: argparse._SubParsersAction) -> None:
     pull = actions.add_parser("pull", help="Pull competition images")
     _competition_argument(pull)
     pull.add_argument("--pull", choices=("always", "missing", "never"), default="always")
+    pull.add_argument("--detach", action="store_true", help="Queue without waiting")
     for name, help_text in (
         ("start", "Start existing competition containers"),
         ("stop", "Stop containers without removing them"),
@@ -672,12 +752,19 @@ def populate_play_actions(actions: argparse._SubParsersAction) -> None:
     ):
         command = actions.add_parser(name, help=help_text)
         _competition_argument(command)
+        if name in {"start", "stop", "restart", "delete-container", "delete-image"}:
+            command.add_argument("--detach", action="store_true", help="Queue without waiting")
+    actions.add_parser("ls", help="List all managed competition environments")
+    operations = actions.add_parser("operations", help="List recent Play operations")
+    operations.add_argument("--limit", type=int, default=20)
     down = actions.add_parser("down", help="Deprecated alias for delete-container")
     _competition_argument(down)
+    down.add_argument("--detach", action="store_true", help="Queue without waiting")
     down.add_argument("--volumes", action="store_true", help="Also delete workspace data")
     down.add_argument("--force", action="store_true", help="Skip workspace confirmation")
     delete_workspace = actions.add_parser("delete-workspace", help="Permanently delete workspace data")
     _competition_argument(delete_workspace)
+    delete_workspace.add_argument("--detach", action="store_true", help="Queue without waiting")
     delete_workspace.add_argument("--force", action="store_true", help="Skip typed confirmation")
     logs = actions.add_parser("logs", help="Show redacted competition logs")
     _competition_argument(logs)

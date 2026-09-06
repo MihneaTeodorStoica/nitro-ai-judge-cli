@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.parse
 from typing import Any
 
 from . import config
@@ -525,8 +526,17 @@ def cmd_submissions(
                 print()
             print(f"{current_mode.upper()} submissions (pages: {last_page})")
         print_submissions(items, current_mode)
-        cached.extend(items)
-    update_cache("submissions", f"{org}/{comp}/{task_id}", cached)
+        cached.extend({**item, "_mode": current_mode} for item in items)
+    base_key = f"{org}/{comp}/{task_id}"
+    cache_key = base_key + "?" + urllib.parse.urlencode(
+        {"author": author or "", "page": page if page is not None else "all",
+         "page_size": page_size, "mode": mode}
+    )
+    # CLI filters must not replace the TUI's canonical task cache.
+    update_cache("submissions", cache_key, cached)
+    username = get_username(load_state())
+    if page is None and mode == "both" and username and author == username:
+        update_cache("submissions", base_key, cached)
     return 0
 
 def cmd_submission(

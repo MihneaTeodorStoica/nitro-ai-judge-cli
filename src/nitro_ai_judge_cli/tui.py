@@ -41,7 +41,7 @@ from .api import (
     refresh_saved_tokens,
     save_token_state,
 )
-from .config import DEFAULT_SUBMISSION_PAGE_SIZE
+from .config import DEFAULT_SUBMISSION_PAGE_SIZE, runtime
 from .contests import (
     download_task_data,
     load_competitions,
@@ -68,9 +68,11 @@ from .submissions import (
     create_submission,
     load_submission,
     load_submissions,
+    set_submission_final,
     submission_score,
 )
 from .ui import format_datetime_ms
+from .tui_paths import PathInput
 
 
 PENDING_STATES = {"created", "in queue", "pending", "processing", "queued", "running"}
@@ -134,7 +136,9 @@ def task_label(task: dict[str, Any], number: int) -> Text:
 
 
 def submission_label(submission: dict[str, Any]) -> str:
-    mode = str(submission.get("_mode") or "partial")
+    mode = str(submission.get("_mode") or (
+        "complete" if "completeTaskScore" in submission and "partialTaskScore" not in submission else "partial"
+    ))
     short_id = str(submission.get("id") or "?").split("-")[-1]
     state = str(submission.get("state") or "unknown")
     final = " · final" if submission.get("isFinal") else ""
@@ -247,6 +251,20 @@ def _load_submission_with_auth(
     **kwargs: Any,
 ) -> dict[str, Any]:
     return load_submission(submission_id, cookies, bearer, **kwargs)
+
+
+async def _finish_dom_update(update: Any) -> None:
+    """Finish mounting/pruning before propagating worker cancellation.
+
+    Textual's DOM awaitables gather child message pumps. Cancelling that gather
+    can also cancel the pumps, which later breaks application shutdown.
+    """
+    task = asyncio.ensure_future(update)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.shield(task)
+        raise
 
 
 async def _wait_for_play_operation(
@@ -495,14 +513,14 @@ class DownloadScreen(ModalScreen[DownloadRequest | None]):
             (category.replace("_", " ").title(), category, True)
             for category in self.categories
         ]
-        with Vertical(id="download-dialog"):
+        with VerticalScroll(id="download-dialog"):
             yield Label("Download task data", classes="dialog-title")
             yield Label("Categories")
             yield SelectionList(*choices, id="download-categories")
             yield Label("Output directory")
-            yield Input(value=os.getcwd(), id="download-directory")
+            yield PathInput(value=os.getcwd(), id="download-directory", directories_only=True)
             yield Label("Single-file path (optional; one category only)")
-            yield Input(placeholder="/path/to/file", id="download-output")
+            yield PathInput(placeholder="/path/to/file", id="download-output")
             yield Static("", id="download-error", classes="form-error", markup=False)
             yield Static(
                 "Space toggle · Tab next · Enter on last field download · Esc cancel",
@@ -529,8 +547,11 @@ class DownloadScreen(ModalScreen[DownloadRequest | None]):
         categories = list(
             self.query_one("#download-categories", SelectionList).selected
         )
-        directory = self.query_one("#download-directory", Input).value.strip()
-        output = self.query_one("#download-output", Input).value.strip() or None
+        directory = os.path.expanduser(
+            self.query_one("#download-directory", Input).value.strip()
+        )
+        output_value = self.query_one("#download-output", Input).value.strip()
+        output = os.path.expanduser(output_value) if output_value else None
         error = self.query_one("#download-error", Static)
         if not categories:
             error.update("[!] Select at least one category.")
@@ -553,6 +574,10 @@ class SubmitRequest:
 
 
 class SubmitScreen(ModalScreen[SubmitRequest | None]):
+    def __init__(self, *, source_required: bool = False) -> None:
+        super().__init__()
+        self.source_required = source_required
+
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("tab", "focus_next", "Next", show=False, priority=True),
@@ -566,10 +591,10 @@ class SubmitScreen(ModalScreen[SubmitRequest | None]):
             yield Label("Create submission", classes="dialog-title")
             with Horizontal(classes="form-row"):
                 yield Label("Output file")
-                yield Input(placeholder="submission.csv", id="submit-output")
+                yield PathInput(placeholder="submission.csv", id="submit-output")
             with Horizontal(classes="form-row"):
-                yield Label("Source (optional)")
-                yield Input(placeholder="solution.py", id="submit-source")
+                yield Label("Source file" if self.source_required else "Source (optional)")
+                yield PathInput(placeholder="solution.py", id="submit-source")
             with Horizontal(classes="form-row"):
                 yield Label("Note (optional)")
                 yield Input(id="submit-note")
@@ -607,10 +632,16 @@ class SubmitScreen(ModalScreen[SubmitRequest | None]):
                 "[!] Enter an output file."
             )
             return
+        source = self.query_one("#submit-source", Input).value.strip()
+        if self.source_required and not source:
+            self.query_one("#submit-error", Static).update(
+                "[!] Enter a source file for submission proxy mode."
+            )
+            return
         self.dismiss(
             SubmitRequest(
-                output,
-                self.query_one("#submit-source", Input).value.strip() or None,
+                os.path.expanduser(output),
+                os.path.expanduser(source) if source else None,
                 self.query_one("#submit-note", Input).value,
             )
         )
@@ -693,6 +724,10 @@ class PlayMenu(ModalScreen[str | None]):
 
 
 class HelpScreen(ModalScreen[None]):
+    def __init__(self, context: str = "") -> None:
+        super().__init__()
+        self.context = context
+
     BINDINGS = [
         Binding("escape", "close", "Close"),
         Binding("question_mark", "close", "Close"),
@@ -712,12 +747,14 @@ Global
 
 Forms
   Space toggles choices. Tab moves. Enter confirms the final field.
-  Destructive Play down always asks for y/n confirmation.
+  Right at the end of a path accepts a filesystem suggestion.
+  Destructive Play actions require confirmation; workspace deletion requires its full reference.
 """
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="help-dialog"):
+        with VerticalScroll(id="help-dialog"):
             yield Label("Nitro AI Judge keys", classes="dialog-title")
+            yield Static(self.context, markup=False)
             yield Static(self.HELP)
             yield Static("? or Esc close", classes="dialog-hint")
 
@@ -734,6 +771,7 @@ class NitroTUI(App[int]):
         Binding("question_mark", "help", "Help"),
         Binding("slash", "filter", "Filter"),
         Binding("r", "refresh", "Refresh"),
+        Binding("f", "toggle_final", "Toggle final", show=False),
         Binding("enter", "open", "Open"),
         Binding("escape", "back", "Back", show=False),
         Binding("h", "left", "Left", show=False),
@@ -933,6 +971,16 @@ class NitroTUI(App[int]):
     #submission-detail-scroll {
         height: 1fr;
         padding-top: 1;
+    }
+
+    #overview-filter {
+        display: none;
+        height: 3;
+        margin-bottom: 1;
+    }
+
+    #overview-filter.-open {
+        display: block;
     }
 
     #status-line {
@@ -1154,6 +1202,7 @@ class NitroTUI(App[int]):
                 )
                 with ContentSwitcher(initial="view-overview", id="task-views"):
                     with VerticalScroll(id="view-overview", classes="task-view"):
+                        yield Input(placeholder="Search statement", id="overview-filter")
                         yield Markdown(
                             "Select a contest to begin.",
                             id="overview",
@@ -1175,6 +1224,7 @@ class NitroTUI(App[int]):
                                 id="new-submission",
                                 variant="success",
                             )
+                            yield Button("Set final", id="submission-final", disabled=True)
                         yield Input(
                             placeholder="Filter submissions",
                             id="submission-filter",
@@ -1316,6 +1366,7 @@ class NitroTUI(App[int]):
         )
 
     def _clear_submission_context(self) -> None:
+        self.workers.cancel_group(self, "submission-poll")
         self.submission_generation += 1
         self.current_submission = None
         self.submissions = []
@@ -1388,12 +1439,12 @@ class NitroTUI(App[int]):
             f"Contests  {len(self.visible_contests)}/{len(self.contests)}"
         )
         contest_view = self.query_one("#contest-list", ListView)
-        await contest_view.clear()
+        await _finish_dom_update(contest_view.clear())
         if self.visible_contests:
-            await contest_view.extend(
+            await _finish_dom_update(contest_view.extend(
                 EntityItem(item, contest_label(item))
                 for item in self.visible_contests
-            )
+            ))
             selected_ref = (
                 contest_ref(self.current_contest) if self.current_contest else None
             )
@@ -1422,12 +1473,12 @@ class NitroTUI(App[int]):
             f"Tasks  {len(self.visible_tasks)}/{len(self.tasks)}"
         )
         task_view = self.query_one("#task-list", ListView)
-        await task_view.clear()
+        await _finish_dom_update(task_view.clear())
         if self.visible_tasks:
-            await task_view.extend(
+            await _finish_dom_update(task_view.extend(
                 EntityItem(item, task_label(item, number))
                 for number, item in visible_numbered
-            )
+            ))
             selected_id = (
                 str(self.current_task.get("id")) if self.current_task else None
             )
@@ -1571,9 +1622,28 @@ class NitroTUI(App[int]):
             or "No statement is available."
         ).strip()
         markdown = statement if statement.startswith("#") else f"# {title}\n\n{statement}"
+        query = self.query_one("#overview-filter", Input).value.strip()
+        if query:
+            matches = [
+                line
+                for line in markdown.splitlines()
+                if query.casefold() in line.casefold()
+            ]
+            safe_query = query.replace("`", "'")
+            if matches:
+                excerpts = "\n".join(f"> {line}" for line in matches[:20])
+                markdown = (
+                    f"> {len(matches)} match(es) for `{safe_query}`.\n\n"
+                    f"{excerpts}\n\n---\n\n{markdown}"
+                )
+            else:
+                markdown = f"> No matches for `{safe_query}`.\n\n---\n\n{markdown}"
         self.query_one("#overview", Markdown).update(markdown)
 
     def _render_view_nav(self) -> None:
+        final = self.query_one("#submission-final", Button)
+        final.disabled = not bool((self.current_submission or {}).get("id"))
+        final.label = "Unset final" if (self.current_submission or {}).get("isFinal") else "Set final"
         tabs = self.query_one("#view-nav", Tabs)
         tabs.active = (
             "tab-overview",
@@ -1605,7 +1675,10 @@ class NitroTUI(App[int]):
             self.active_view - 1
         ]
         self._render_view_nav()
+        if self.active_view != 3:
+            self.workers.cancel_group(self, "submission-poll")
         if self.active_view == 3:
+            self._resume_pending_submission_poll_current()
             self.render_submissions_worker()
             if self.current_task and self.session.state:
                 self.refresh_submissions()
@@ -1640,6 +1713,7 @@ class NitroTUI(App[int]):
             self.require_login("Sign in to reconnect.")
 
     def require_login(self, message: str) -> None:
+        self.workers.cancel_group(self, "submission-poll")
         self.set_status(f"{message} Cached data remains available.", "error")
         if not self._login_open:
             self._login_open = True
@@ -1809,6 +1883,16 @@ class NitroTUI(App[int]):
     def submission_filter_changed(self) -> None:
         self.render_submissions_worker()
 
+    @on(Input.Changed, "#overview-filter")
+    def overview_filter_changed(self) -> None:
+        if self.current_task:
+            self._render_task_overview(self.current_task)
+
+    @on(Input.Submitted, "#overview-filter")
+    def overview_filter_submitted(self) -> None:
+        self.query_one("#overview-filter", Input).remove_class("-open")
+        self.query_one("#view-overview", VerticalScroll).focus()
+
     @on(Input.Submitted, "#submission-filter")
     def submission_filter_submitted(self) -> None:
         self.query_one("#submission-filter", Input).remove_class("-open")
@@ -1818,6 +1902,67 @@ class NitroTUI(App[int]):
     def new_submission_clicked(self) -> None:
         self.action_submit()
 
+    @on(Button.Pressed, "#submission-final")
+    def final_clicked(self) -> None:
+        self.action_toggle_final()
+
+    def action_toggle_final(self) -> None:
+        if self.active_view == 3 and self.current_submission:
+            self.final_selection_flow(not bool(self.current_submission.get("isFinal")))
+
+    @work(group="submission-final", exclusive=True)
+    async def final_selection_flow(self, final: bool) -> None:
+        if not self.current_submission or not self.current_contest or not self.current_task:
+            self.set_status("Select a submission first.", "error")
+            return
+        if not self.session.state:
+            self.require_login("Sign in to change final selection.")
+            return
+        submission_id = str(self.current_submission.get("id") or "")
+        if not submission_id:
+            self.set_status("Selected submission has no ID.", "error")
+            return
+        org, comp = contest_ref(self.current_contest)
+        task_id = str(self.current_task.get("id"))
+        generation = self.submission_generation
+        contest_generation, task_generation = self.contest_generation, self.task_generation
+
+        def current() -> bool:
+            return (
+                self._task_is_current(contest_generation, task_generation, org, comp, task_id)
+                and generation == self.submission_generation
+                and str((self.current_submission or {}).get("id")) == submission_id
+            )
+
+        confirmed = await self.push_screen_wait(ConfirmScreen(
+            f"{'Set' if final else 'Unset'} submission {submission_id} as final? This changes your final selection."
+        ))
+        if not confirmed or not current():
+            return
+        try:
+            await self.session.call(set_submission_final, submission_id, final)
+            if not current():
+                return
+            self.current_submission = {**self.current_submission, "isFinal": final}
+            self.submissions = [
+                {**item, "isFinal": final} if str(item.get("id")) == submission_id else item
+                for item in self.submissions
+            ]
+            update_cache("submissions", self.task_cache_key, self.submissions)
+            set_submission(self.current_submission)
+            self.query_one("#submission-detail", Static).update(
+                submission_details(self.current_submission)
+            )
+            self.set_status(
+                f"Submission {submission_id} {'set as' if final else 'unset as'} final.",
+                "success",
+            )
+            self._render_view_nav()
+            self.refresh_submissions()
+        except Exception as exc:
+            if current():
+                self._network_error("Could not update final submission", exc)
+
     async def render_submissions(self) -> None:
         query = self.query_one("#submission-filter", Input).value
         username = str(
@@ -1826,8 +1971,8 @@ class NitroTUI(App[int]):
         owned = [
             item
             for item in self.submissions
-            if username
-            and str(item.get("username") or item.get("author") or "").casefold()
+            if not username
+            or str(item.get("username") or item.get("author") or "").casefold()
             == username
         ]
         self.submissions = owned
@@ -1844,12 +1989,39 @@ class NitroTUI(App[int]):
         ]
         self.visible_submissions = visible
         view = self.query_one("#submission-list", ListView)
-        await view.clear()
+        await _finish_dom_update(view.clear())
+        selected_id = str((self.current_submission or {}).get("id") or "")
+        selected_mode = (self.current_submission or {}).get("_mode")
         if visible:
-            await view.extend(
+            await _finish_dom_update(view.extend(
                 EntityItem(item, submission_label(item)) for item in visible
+            ))
+            index = next(
+                (
+                    i
+                    for i, item in enumerate(visible)
+                    if str(item.get("id") or "") == selected_id
+                    and (selected_mode is None or item.get("_mode") == selected_mode)
+                ),
+                0,
             )
-            view.index = 0
+            view.index = index
+            row = visible[index]
+            if (
+                str(row.get("id") or "") == selected_id and self.current_submission
+                and (selected_mode is None or row.get("_mode") == selected_mode)
+            ):
+                self.current_submission = {**row, **self.current_submission}
+            else:
+                self.submission_generation += 1
+                self.current_submission = row
+            set_submission(self.current_submission)
+            self.query_one("#submission-detail", Static).update(
+                submission_details(self.current_submission)
+            )
+            self._resume_pending_submission_poll_current()
+        elif query or not self.current_submission:
+            self.query_one("#submission-detail", Static).update("Select a submission.")
         self._render_view_nav()
 
     @work(group="submission-render", exclusive=True)
@@ -1866,7 +2038,9 @@ class NitroTUI(App[int]):
             submission_details(event.item.entity)
         )
         self.submission_generation += 1
+        self._render_view_nav()
         self.refresh_submission_details()
+        self._resume_pending_submission_poll_current()
 
     @work(group="submissions", exclusive=True)
     async def refresh_submissions(self) -> None:
@@ -1957,10 +2131,22 @@ class NitroTUI(App[int]):
                 or str(self.current_submission.get("id")) != submission_id
             ):
                 return
+            if self.current_submission.get("_mode"):
+                submission = {**submission, "_mode": self.current_submission["_mode"]}
             self.current_submission = submission
             set_submission(submission)
+            self._render_view_nav()
             self.query_one("#submission-detail", Static).update(
                 submission_details(submission)
+            )
+            self._resume_pending_submission_poll(
+                submission_id,
+                org,
+                comp,
+                task_id,
+                contest_generation,
+                task_generation,
+                submission_generation,
             )
         except Exception as exc:
             if (
@@ -2036,7 +2222,9 @@ class NitroTUI(App[int]):
         self._focus_active()
 
     def action_filter(self) -> None:
-        if self.active_pane == "right" and self.active_view == 3:
+        if self.active_pane == "right" and self.active_view == 1:
+            field = self.query_one("#overview-filter", Input)
+        elif self.active_pane == "right" and self.active_view == 3:
             field = self.query_one("#submission-filter", Input)
         elif self.active_pane == "contests":
             field = self.query_one("#contest-filter", Input)
@@ -2070,7 +2258,9 @@ class NitroTUI(App[int]):
                     submission_details(self.current_submission)
                 )
                 self.submission_generation += 1
+                self._render_view_nav()
                 self.refresh_submission_details()
+                self._resume_pending_submission_poll_current()
         elif self.active_view == 4:
             self.action_play_menu()
 
@@ -2079,7 +2269,11 @@ class NitroTUI(App[int]):
         if isinstance(focused, Input):
             focused.value = ""
             focused.remove_class("-open")
-            if focused.id == "submission-filter":
+            if focused.id == "overview-filter":
+                if self.current_task:
+                    self._render_task_overview(self.current_task)
+                self.query_one("#view-overview", VerticalScroll).focus()
+            elif focused.id == "submission-filter":
                 self.query_one("#submission-list", ListView).focus()
             elif focused.id == "contest-filter":
                 self.query_one("#contest-list", ListView).focus()
@@ -2254,7 +2448,18 @@ class NitroTUI(App[int]):
                 self.refresh_categories()
 
     def action_help(self) -> None:
-        self.push_screen(HelpScreen())
+        if self.active_pane == "contests":
+            context = "Contests: / filters contests; Enter opens the highlighted competition."
+        elif self.active_pane == "tasks":
+            context = "Tasks: / filters tasks; Enter opens the highlighted task."
+        else:
+            context = (
+                "Overview: / searches the loaded statement locally.",
+                "Data: d opens downloads; Space selects categories in the form.",
+                "Submissions: / filters rows; Tab toggles list/detail; j/k scroll feedback; f toggles final selection with confirmation.",
+                "Play: p opens lifecycle actions; r refreshes status and recent logs.",
+            )[self.active_view - 1]
+        self.push_screen(HelpScreen(context))
 
     def action_download(self) -> None:
         if not self.current_task:
@@ -2299,10 +2504,17 @@ class NitroTUI(App[int]):
                     force=force,
                     show_progress=False,
                 )
-                self.set_status(
-                    f"Downloaded {len(results)} item(s).",
-                    "success",
-                )
+                warnings = [str(item.get("warning")) for item in results if item.get("warning")]
+                if warnings:
+                    self.set_status(
+                        f"Downloaded {len(results)} item(s), with warning: {warnings[0]}",
+                        "error",
+                    )
+                else:
+                    self.set_status(
+                        f"Downloaded {len(results)} item(s).",
+                        "success",
+                    )
                 return
             except RuntimeError as exc:
                 if "Refusing to overwrite" in str(exc) and not force:
@@ -2328,7 +2540,9 @@ class NitroTUI(App[int]):
 
     @work(group="submit-flow", exclusive=True)
     async def submit_flow(self) -> None:
-        request = await self.push_screen_wait(SubmitScreen())
+        request = await self.push_screen_wait(
+            SubmitScreen(source_required=runtime().submission_proxy)
+        )
         if not request or not self.current_contest or not self.current_task:
             return
         contest_generation = self.contest_generation
@@ -2366,6 +2580,7 @@ class NitroTUI(App[int]):
                 "id": str(submission_id),
                 "state": "pending",
             }
+            self.submission_generation += 1
             set_submission(self.current_submission)
             self.active_view = 3
             self.active_pane = "right"
@@ -2374,14 +2589,7 @@ class NitroTUI(App[int]):
                 submission_details(self.current_submission)
             )
             self.set_status(f"Submission {submission_id} queued.", "success")
-            self.poll_submission(
-                str(submission_id),
-                org,
-                comp,
-                task_id,
-                contest_generation,
-                task_generation,
-            )
+            self._resume_pending_submission_poll_current()
         except Exception as exc:
             if self._task_is_current(
                 contest_generation, task_generation, org, comp, task_id
@@ -2397,10 +2605,14 @@ class NitroTUI(App[int]):
         task_id: str,
         contest_generation: int,
         task_generation: int,
+        submission_generation: int | None = None,
     ) -> None:
         while self._task_is_current(
             contest_generation, task_generation, org, comp, task_id
-        ):
+        ) and self.active_view == 3 and self.session.state and (
+            submission_generation is None
+            or submission_generation == self.submission_generation
+        ) and str((self.current_submission or {}).get("id")) == submission_id:
             try:
                 submission = await self.session.call(
                     _load_submission_with_auth,
@@ -2417,6 +2629,11 @@ class NitroTUI(App[int]):
                 return
             if not self._task_is_current(
                 contest_generation, task_generation, org, comp, task_id
+            ) or (
+                submission_generation is not None
+                and submission_generation != self.submission_generation
+            ) or self.active_view != 3 or not self.session.state or (
+                str((self.current_submission or {}).get("id")) != submission_id
             ):
                 return
             self.current_submission = submission
@@ -2434,6 +2651,54 @@ class NitroTUI(App[int]):
                 return
             self.set_status(f"Submission {submission_id}: {state or 'queued'}")
             await asyncio.sleep(SUBMISSION_POLL_INTERVAL)
+
+    def _resume_pending_submission_poll_current(self) -> None:
+        if not self.current_contest or not self.current_task or not self.current_submission:
+            return
+        org, comp = contest_ref(self.current_contest)
+        self._resume_pending_submission_poll(
+            str(self.current_submission.get("id") or ""),
+            org,
+            comp,
+            str(self.current_task.get("id")),
+            self.contest_generation,
+            self.task_generation,
+            self.submission_generation,
+        )
+
+    def _resume_pending_submission_poll(
+        self,
+        submission_id: str,
+        org: str,
+        comp: str,
+        task_id: str,
+        contest_generation: int,
+        task_generation: int,
+        submission_generation: int,
+    ) -> None:
+        if (
+            not submission_id or not self.current_submission
+            or not self.session.state or self.active_view != 3
+        ):
+            return
+        state = str(self.current_submission.get("state") or "").casefold()
+        if state not in PENDING_STATES:
+            self.workers.cancel_group(self, "submission-poll")
+            return
+        key = (org, comp, task_id, submission_id, submission_generation)
+        worker = getattr(self, "_submission_poller", None)
+        if getattr(self, "_submission_poll_key", None) == key and worker and not worker.is_finished:
+            return
+        self._submission_poll_key = key
+        self._submission_poller = self.poll_submission(
+            submission_id,
+            org,
+            comp,
+            task_id,
+            contest_generation,
+            task_generation,
+            submission_generation,
+        )
 
     def action_play_menu(self) -> None:
         if not self.current_contest:

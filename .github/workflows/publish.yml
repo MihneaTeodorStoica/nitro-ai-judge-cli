@@ -2,7 +2,7 @@ name: Build and Publish
 
 on:
   push:
-    branches: [main, feat/play-manager]
+    branches: [main]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -77,6 +77,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Build manager image
         uses: docker/build-push-action@v6
@@ -89,6 +90,18 @@ jobs:
         run: |
           docker run --rm --entrypoint docker naij-play-manager:ci compose version
           docker run --rm --entrypoint python naij-play-manager:ci -c "import aiohttp, nitro_ai_judge_cli.manager"
+      - name: Build and smoke-test ARM64 manager image under QEMU
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: manager/Dockerfile
+          platforms: linux/arm64
+          load: true
+          tags: naij-play-manager:ci-arm64
+      - name: Smoke-test ARM64 image tools and entrypoint
+        run: |
+          docker run --rm --platform linux/arm64 --entrypoint docker naij-play-manager:ci-arm64 compose version
+          docker run --rm --platform linux/arm64 --entrypoint python naij-play-manager:ci-arm64 -c "import aiohttp, nitro_ai_judge_cli.manager"
 
   docker-integration:
     runs-on: ubuntu-latest
@@ -109,7 +122,7 @@ jobs:
         run: python -m unittest discover -s tests/integration -v
 
   edge:
-    if: github.ref == 'refs/heads/feat/play-manager'
+    if: github.ref == 'refs/heads/main'
     needs: [host-test, build, manager-build, docker-integration]
     runs-on: ubuntu-latest
     permissions:
@@ -194,3 +207,16 @@ jobs:
           name: python-package-distributions
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [manager-publish, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish GitHub release after package publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag

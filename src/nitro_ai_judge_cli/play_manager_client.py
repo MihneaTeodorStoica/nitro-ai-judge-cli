@@ -145,6 +145,12 @@ class ManagerClient:
             {key: value for key, value in options.items() if value is not None},
         )
 
+    def operations(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        value = self._request(
+            "GET", f"{BASE_PATH}/api/v1/operations?limit={int(limit)}"
+        )
+        return [item for item in value.get("operations", []) if isinstance(item, dict)]
+
     def operation(self, operation_id: str) -> dict[str, Any]:
         return self._request(
             "GET", f"{BASE_PATH}/api/v1/operations/{urllib.parse.quote(operation_id)}"

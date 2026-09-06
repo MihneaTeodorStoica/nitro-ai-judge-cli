@@ -5,6 +5,8 @@ from __future__ import annotations
 from html.parser import HTMLParser
 import json
 import os
+import re
+import sys
 import threading
 import time
 import urllib.parse
@@ -75,11 +77,8 @@ def normalize_task_file_category(category: str) -> str:
         "pre_judge_script": "pre_judging_script",
     }
     normalized = aliases.get(normalized, normalized)
-    if normalized not in TASK_FILE_CATEGORIES:
-        valid = ", ".join(TASK_FILE_CATEGORIES)
-        raise ValueError(
-            f"invalid file category '{category}'; valid categories: {valid}"
-        )
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_]{0,63}", normalized):
+        raise ValueError(f"invalid file category '{category}'")
     return normalized
 
 def filename_from_content_disposition(value: str) -> str | None:
@@ -97,7 +96,9 @@ def filename_from_content_disposition(value: str) -> str | None:
     if "''" in filename:
         _, filename = filename.split("''", 1)
         filename = urllib.parse.unquote(filename)
-    filename = os.path.basename(filename.strip().strip('"'))
+    filename = os.path.basename(filename.strip().strip('"').replace("\\", "/"))
+    if any(char in filename for char in ("\x00", ":")) or filename in {".", ".."}:
+        return None
     return filename or None
 
 def task_file_category_from_href(
@@ -601,6 +602,42 @@ def write_task_file(
         f.write(body)
     return target
 
+def stream_task_file(
+    cookies: tuple[str, str],
+    bearer: str,
+    org: str,
+    comp: str,
+    task_id: str,
+    *,
+    categories: list[str] | None,
+    force: bool = False,
+) -> None:
+    """Write one task file verbatim to stdout without creating local files."""
+    if not categories or len(categories) != 1:
+        raise RuntimeError("--output - requires exactly one --category")
+    if bool(getattr(sys.stdout, "isatty", lambda: False)()) and not force:
+        raise RuntimeError(
+            "Refusing to write task data to an interactive terminal; use --force"
+        )
+
+    category = normalize_task_file_category(categories[0])
+    if category == "statement":
+        body = task_statement_markdown(cookies, bearer, org, comp, task_id)
+    else:
+        links = load_task_file_links(cookies, org, comp, task_id)
+        status, body, headers = download_task_file(
+            cookies, bearer, org, comp, task_id, category, links
+        )
+        if status != 200 or response_is_html(body, headers):
+            preview = body.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"Could not download {category}: HTTP {status}: {error_preview(preview)}"
+            )
+
+    sys.stdout.buffer.write(body)
+    sys.stdout.buffer.flush()
+
+
 def extract_task_archive(
     path: str, *, force: bool = False
 ) -> tuple[str | None, str | None]:
@@ -744,13 +781,27 @@ def cmd_download_data(
             print("No task data files available")
             return 0
         for category in available:
-            label = TASK_FILE_CATEGORIES.get(category) or category.replace(
-                "_", " "
-            ).replace("-", " ").capitalize()
+            try:
+                category = normalize_task_file_category(category)
+            except ValueError:
+                continue
+            label = TASK_FILE_CATEGORIES.get(category) or category.replace("_", " ").capitalize()
             print(f"{category}\t{label}")
         return 0
 
+    stream_stdout = output_path == "-"
     try:
+        if stream_stdout:
+            stream_task_file(
+                cookies,
+                bearer,
+                org,
+                comp,
+                task_id,
+                categories=categories,
+                force=force,
+            )
+            return 0
         results = download_task_data(
             cookies,
             bearer,
@@ -763,7 +814,7 @@ def cmd_download_data(
             force=force,
         )
     except (RuntimeError, ValueError, OSError) as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}", file=sys.stderr if stream_stdout else sys.stdout)
         return 1
 
     for result in results:

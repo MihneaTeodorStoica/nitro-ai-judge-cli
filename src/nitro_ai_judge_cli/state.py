@@ -79,6 +79,15 @@ def _harden_existing(paths: StatePaths) -> None:
                 pass
 
 
+def inspect_state_paths() -> StatePaths:
+    """Resolve diagnostics paths without migration, writes, or permission changes."""
+    override = _cli_state_dir or clean_env_value("NAIJ_STATE_DIR") or clean_env_value("NITRO_STATE_DIR")
+    if override:
+        return StatePaths(os.path.abspath(os.path.expanduser(override)))
+    canonical, legacy = _default_roots()
+    return StatePaths(legacy if not os.path.exists(canonical) and os.path.exists(legacy) else canonical)
+
+
 def resolve_state_paths() -> StatePaths:
     global _cached_key, _cached_paths
     canonical_env = clean_env_value("NAIJ_STATE_DIR")

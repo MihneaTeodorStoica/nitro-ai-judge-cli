@@ -277,6 +277,19 @@ class ManagerStore:
                 (status, stage, message, json.dumps(error), now, operation_id),
             )
 
+    def operations(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT * FROM operations
+                ORDER BY updated_at DESC, created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._operation_row(row) for row in rows]
+
     def operation(self, operation_id: str) -> dict[str, Any] | None:
         with self.lock:
             row = self.connection.execute(
