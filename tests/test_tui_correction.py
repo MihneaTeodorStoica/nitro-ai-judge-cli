@@ -20,7 +20,7 @@ class TUIRequirements(unittest.IsolatedAsyncioTestCase):
             with self.auth_patches(tasks=fixtures.TASKS):
                 app = tui.NitroTUI(manager_client=fixtures.FakeManager())
                 async with app.run_test(size=size) as pilot:
-                    await pilot.pause(.2)
+                    await pilot.pause(.8)
                     app.current_task = {**fixtures.TASKS[0], 'statement':'Needle first\n' + 'plain line\n'*60 + 'NEEDLE last'}
                     app.action_view(1)
                     with patch.object(tui, 'load_task_view', side_effect=AssertionError('search must be local')):
@@ -62,7 +62,7 @@ class TUIRequirements(unittest.IsolatedAsyncioTestCase):
         with self.auth_patches(tasks=fixtures.TASKS):
             app = tui.NitroTUI(manager_client=manager)
             async with app.run_test(size=(120,34)) as pilot:
-                await pilot.pause(.2)
+                await pilot.pause(.8)
                 app.action_view(4)
                 app.action_toggle_logs()
                 await asyncio.wait_for(manager.loaded.wait(), 4)
@@ -90,7 +90,7 @@ class TUIRequirements(unittest.IsolatedAsyncioTestCase):
         with self.auth_patches(tasks=fixtures.TASKS):
             app = tui.NitroTUI(manager_client=Manager())
             async with app.run_test(size=(120,34)) as pilot:
-                await pilot.pause(.2)
+                await pilot.pause(.8)
                 app.action_view(4)
                 await pilot.pause(.1)
                 app.action_toggle_logs()

@@ -104,7 +104,7 @@ class TUILifecycleTests(unittest.IsolatedAsyncioTestCase):
         with self.auth_patches(tasks=TASKS), patch.object(tui, "load_submission", return_value=pending) as load, patch.object(tui, "SUBMISSION_POLL_INTERVAL", 0.03):
             app = tui.NitroTUI(manager_client=FakeManager())
             async with app.run_test(size=(110, 30)) as pilot:
-                await pilot.pause(0.2)
+                await pilot.pause(0.5)
                 app.current_submission = dict(pending)
                 app.action_view(3)
                 await pilot.pause(0.1)
