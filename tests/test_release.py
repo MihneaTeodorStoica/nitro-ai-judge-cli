@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,14 +19,29 @@ from nitro_ai_judge_cli.play_protocol import (
 )
 
 
+WORKFLOW = Path(__file__).parents[1] / ".github/workflows/publish.yml"
+
+
+def workflow_job(name: str) -> str:
+    workflow = WORKFLOW.read_text()
+    match = re.search(
+        rf"^  {re.escape(name)}:\n(.*?)(?=^  [a-z][a-z-]*:|\Z)",
+        workflow,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"publish workflow is missing {name!r} job")
+    return match.group(1)
+
+
 class ReleaseTests(unittest.TestCase):
-    def test_3_1_5_versions_keep_protocol_compatibility(self) -> None:
+    def test_3_2_0_versions_keep_protocol_compatibility(self) -> None:
         pyproject = Path(__file__).parents[1].joinpath("pyproject.toml").read_text()
-        self.assertIn('version = "3.1.5"', pyproject)
-        self.assertEqual(MANAGER_VERSION, "3.1.5")
+        self.assertIn('version = "3.2.0"', pyproject)
+        self.assertEqual(MANAGER_VERSION, "3.2.0")
         self.assertEqual(
             DEFAULT_MANAGER_IMAGE,
-            "ghcr.io/mihneateodorstoica/naij-play-manager:3.1.5",
+            "ghcr.io/mihneateodorstoica/naij-play-manager:3.2.0",
         )
         self.assertEqual(API_VERSION, 1)
         self.assertEqual(MINIMUM_CLI_VERSION, "3.0.0")
@@ -42,6 +58,53 @@ class ReleaseTests(unittest.TestCase):
                 "nitroai/nitro-test-notebook@sha256:9dd89d1c276b550c1c9bf05b7cf60761996a3dec0bc3a013400221416d8ec22e",
                 "nitroai/nitro-test-judge-proxy@sha256:46542d51497d689b7d57acf85b143dc52e4022246afedae0d04dc1325358fd24",
             ),
+        )
+
+    def test_publish_workflow_updates_edge_only_from_main(self) -> None:
+        workflow = WORKFLOW.read_text()
+        self.assertIn("branches: [main]", workflow)
+        self.assertNotIn("feat/play-manager", workflow)
+
+        edge = workflow_job("edge")
+        self.assertIn("if: github.ref == 'refs/heads/main'", edge)
+        self.assertIn("needs: [host-test, build, manager-build, docker-integration]", edge)
+        self.assertIn("packages: write", edge)
+        self.assertIn("tags: ${{ env.MANAGER_IMAGE }}:edge", edge)
+
+    def test_publish_workflow_smoke_tests_arm64_manager_image(self) -> None:
+        manager_build = workflow_job("manager-build")
+        self.assertLess(
+            manager_build.index("docker/setup-qemu-action@v3"),
+            manager_build.index("docker/setup-buildx-action@v3"),
+        )
+        self.assertIn("platforms: linux/arm64", manager_build)
+        self.assertIn("tags: naij-play-manager:ci-arm64", manager_build)
+        self.assertIn("Start ARM64 entrypoint and verify health and identity", manager_build)
+        self.assertIn("base+'health'", manager_build)
+        self.assertIn("base+'info'", manager_build)
+        self.assertIn("docker rm -f", manager_build)
+        self.assertIn(
+            "docker run --rm --platform linux/arm64 --entrypoint docker "
+            "naij-play-manager:ci-arm64 compose version",
+            manager_build,
+        )
+        self.assertIn(
+            "docker run --rm --platform linux/arm64 --entrypoint python "
+            "naij-play-manager:ci-arm64 -c \"import aiohttp, nitro_ai_judge_cli.manager\"",
+            manager_build,
+        )
+
+    def test_publish_workflow_creates_github_release_after_publication(self) -> None:
+        github_release = workflow_job("github-release")
+        self.assertIn("if: startsWith(github.ref, 'refs/tags/v')", github_release)
+        self.assertIn("needs: [manager-publish, publish-pypi]", github_release)
+        self.assertIn("contents: write", github_release)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", github_release)
+        self.assertIn('gh release view "${GITHUB_REF_NAME}"', github_release)
+        self.assertIn('gh release edit "${GITHUB_REF_NAME}"', github_release)
+        self.assertIn(
+            'gh release create "${GITHUB_REF_NAME}" --notes-file "$NOTES" --verify-tag --latest',
+            github_release,
         )
 
     def test_manager_install_and_update_advance_only_older_official_images(self) -> None:
@@ -117,7 +180,7 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(
                         play,
                         "install_manager",
-                        return_value={"manager_version": "3.1.5"},
+                        return_value={"manager_version": "3.2.0"},
                     ) as install,
                     patch("builtins.print"),
                 ):

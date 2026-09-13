@@ -1,0 +1,18 @@
+Nitro AI Judge CLI third-party notices
+=========================================
+
+The manager web interface bundles the following unmodified font subsets:
+
+* Inter (`src/nitro_ai_judge_cli/manager/assets/inter-latin.woff2` and
+  `inter-latin-ext.woff2`), from The Inter Project Authors,
+  https://github.com/rsms/inter.  Copyright (c) 2016 The Inter Project
+  Authors.  Licensed under the SIL Open Font License 1.1; see
+  `LICENSES/Inter-OFL-1.1.txt`.
+
+* Lexend Deca (`src/nitro_ai_judge_cli/manager/assets/lexend-deca-latin.woff2`
+  and `lexend-deca-latin-ext.woff2`), from The Lexend Project Authors,
+  https://github.com/googlefonts/lexend.  Copyright 2018 The Lexend Project
+  Authors, with Reserved Font Name “RevReading Lexend”.  Licensed under the
+  SIL Open Font License 1.1; see `LICENSES/Lexend-OFL-1.1.txt`.
+
+The project source is separately licensed under the MIT License; see LICENSE.

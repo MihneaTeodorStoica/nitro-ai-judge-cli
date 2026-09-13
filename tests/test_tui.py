@@ -279,6 +279,7 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
             os.environ,
             {
                 "HOME": str(self.root),
+                "USERPROFILE": str(self.root),
                 "NAIJ_STATE_DIR": str(self.root / "state"),
             },
             clear=True,
@@ -740,13 +741,9 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertIsInstance(app.screen, tui.DownloadScreen)
                 await pilot.press("tab")
-                app.screen.query_one("#download-directory", Input).value = str(
-                    self.root
-                )
+                app.screen.query_one("#download-directory", Input).value = "~/downloads"
                 await pilot.press("tab")
-                app.screen.query_one("#download-output", Input).value = str(
-                    destination
-                )
+                app.screen.query_one("#download-output", Input).value = "~/existing.csv"
                 await pilot.press("enter")
                 await pilot.pause(0.1)
                 self.assertIsInstance(app.screen, tui.ConfirmScreen)
@@ -754,6 +751,10 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(0.2)
 
                 self.assertTrue(download.call_args.kwargs["force"])
+                self.assertEqual(
+                    download.call_args.kwargs["output_dir"], str(self.root / "downloads")
+                )
+                self.assertEqual(download.call_args.kwargs["output_path"], str(destination))
                 self.assertFalse(download.call_args.kwargs["show_progress"])
                 self.assertIn(
                     "Downloaded 1",
@@ -774,7 +775,7 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
                 tui,
                 "create_submission",
                 return_value={"submissionID": "new-submission"},
-            ),
+            ) as create,
             patch.object(tui, "load_submission", return_value=complete),
             patch.object(tui, "SUBMISSION_POLL_INTERVAL", 0.01),
         ):
@@ -784,15 +785,19 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("s")
                 await pilot.pause()
                 self.assertIsInstance(app.screen, tui.SubmitScreen)
-                app.screen.query_one("#submit-output", Input).value = "answer.csv"
+                app.screen.query_one("#submit-output", Input).value = "~/answer.csv"
                 await pilot.press("enter")
-                app.screen.query_one("#submit-source", Input).value = "solution.py"
+                app.screen.query_one("#submit-source", Input).value = "~/solution.py"
                 await pilot.press("enter")
                 app.screen.query_one("#submit-note", Input).value = "note"
                 self.assertTrue(await pilot.click("#submit-confirm"))
                 await pilot.pause(0.3)
 
                 self.assertEqual(app.current_submission["state"], "finished")
+                self.assertEqual(
+                    create.call_args.args[5:7],
+                    (str(self.root / "answer.csv"), str(self.root / "solution.py")),
+                )
                 self.assertIn(
                     "Accepted",
                     str(app.query_one("#submission-detail", Static).content),
@@ -821,13 +826,18 @@ class TUIPilotTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause(0.2)
                 await pilot.press("s")
                 await pilot.pause()
-                app.screen.query_one("#submit-output", Input).value = "answer.csv"
-                await pilot.press("enter", "enter", "enter")
+                output = self.root / "absolute answer.csv"
+                app.screen.query_one("#submit-output", Input).value = str(output)
+                await pilot.press("enter")
+                app.screen.query_one("#submit-source", Input).value = "relative source.py"
+                await pilot.press("enter", "enter")
                 await pilot.pause(0.3)
 
                 self.assertNotIsInstance(app.screen, tui.SubmitScreen)
                 self.assertEqual(app.current_submission["id"], "keyboard-submission")
-                create.assert_called_once()
+                self.assertEqual(
+                    create.call_args.args[5:7], (str(output), "relative source.py")
+                )
 
     async def test_submissions_view_is_user_only_and_has_new_button(self) -> None:
         self.cache_selection()

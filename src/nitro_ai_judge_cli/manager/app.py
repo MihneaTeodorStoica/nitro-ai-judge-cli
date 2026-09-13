@@ -38,6 +38,7 @@ from .store import ManagerStore
 PUBLIC_API_PATHS = {
     f"{BASE_PATH}/api/v1/info",
     f"{BASE_PATH}/api/v1/health",
+    f"{BASE_PATH}/api/v1/openapi.json",
 }
 TERMINAL_OPERATION_STATES = {"complete", "failed", "cancelled", "interrupted"}
 HOP_HEADERS = {
@@ -570,6 +571,9 @@ async def competition_detail(request: web.Request) -> web.Response:
     org, competition, key = _competition_parts(request)
     snapshot = await request.app["backend"].inspect_competition(org, competition)
     _upsert_snapshot(request.app, key, org, competition, snapshot)
+    operation = request.app["store"].latest_operation(key)
+    if operation:
+        snapshot = {**snapshot, "operation": operation}
     return web.json_response(snapshot)
 
 
@@ -788,6 +792,51 @@ async def _run_operation(
     finally:
         app["operation_tasks"].pop(operation_id, None)
         _publish_refresh(app)
+
+
+async def openapi_document(_: web.Request) -> web.Response:
+    from .openapi import contract
+    return web.json_response(contract())
+
+
+async def operations(request: web.Request) -> web.Response:
+    try:
+        limit = int(request.query.get("limit", "50"))
+    except ValueError:
+        raise WireError(ErrorType.INVALID_REQUEST.value, "limit must be an integer", status=400)
+    if not 1 <= limit <= 200:
+        raise WireError(ErrorType.INVALID_REQUEST.value, "limit must be between 1 and 200", status=400)
+    try:
+        offset = int(request.query.get("offset", "0"))
+    except ValueError:
+        raise WireError(ErrorType.INVALID_REQUEST.value, "offset must be an integer", status=400)
+    if not 0 <= offset <= 100000:
+        raise WireError(ErrorType.INVALID_REQUEST.value, "offset must be between 0 and 100000", status=400)
+    status = request.query.get("status")
+    if status is not None and status not in TERMINAL_OPERATION_STATES | {"queued", "running"}:
+        raise WireError(ErrorType.INVALID_REQUEST.value, "unknown operation status", status=400)
+    competition = request.query.get("competition")
+    if competition is not None:
+        parts = competition.split("/")
+        if len(parts) != 2:
+            raise WireError(ErrorType.INVALID_REQUEST.value, "competition must be ORG/COMP", status=400)
+        validate_competition(*parts)
+    action = request.query.get("action")
+    if action is not None and action not in ACTION_NAMES:
+        raise WireError(ErrorType.INVALID_REQUEST.value, "unknown operation action", status=400)
+    filters = {key: value for key, value in {"offset": offset, "status": status, "competition": competition, "action": action}.items() if value}
+    # History is a summary, not a dump of saved options, results or log buffers.
+    keys = ("id", "competition", "action", "status", "stage", "message", "created_at", "updated_at", "started_at", "finished_at", "duration")
+    values = []
+    for item in request.app["store"].operations(limit=limit, **filters):
+        summary = {key: redact(value)[:2048] if isinstance(value, str) else value
+                   for key in keys if (value := item.get(key)) is not None}
+        error = item.get("error")
+        if isinstance(error, dict) and item.get("status") in {"failed", "cancelled", "interrupted"}:
+            summary["failure"] = {"type": redact(str(error.get("type") or "operation_failed")),
+                                  "message": redact(str(error.get("message") or "Operation failed"))[:2048]}
+        values.append(summary)
+    return web.json_response({"operations": values, "next_offset": offset + limit if len(values) == limit else None})
 
 
 async def operation_detail(request: web.Request) -> web.Response:
@@ -1314,6 +1363,7 @@ def create_app(
     router.add_get(f"{BASE_PATH}/assets/{{name}}", asset)
     router.add_get(f"{BASE_PATH}/api/v1/info", info)
     router.add_get(f"{BASE_PATH}/api/v1/health", health)
+    router.add_get(f"{BASE_PATH}/api/v1/openapi.json", openapi_document)
     router.add_get(f"{BASE_PATH}/api/v1/competitions", competitions)
     router.add_get(f"{BASE_PATH}/api/v1/events", events)
     router.add_get(f"{BASE_PATH}/api/v1/competitions/{{org}}/{{competition}}", competition_detail)
@@ -1324,6 +1374,7 @@ def create_app(
         competition_action,
     )
     router.add_get(f"{BASE_PATH}/api/v1/competitions/{{org}}/{{competition}}/logs", logs)
+    router.add_get(f"{BASE_PATH}/api/v1/operations", operations)
     router.add_get(
         f"{BASE_PATH}/api/v1/competitions/{{org}}/{{competition}}/logs/follow",
         logs_follow,

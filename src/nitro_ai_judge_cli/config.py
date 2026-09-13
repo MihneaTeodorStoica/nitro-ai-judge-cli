@@ -77,6 +77,8 @@ def resolve_submission_proxy(cli_enabled: bool, proxy_url_selected: bool) -> boo
 class RuntimeConfig:
     api_base_url: str
     submission_proxy: bool
+    api_source: str = "programmatic"
+    proxy_source: str = "programmatic"
 
     @classmethod
     def resolve(
@@ -85,6 +87,8 @@ class RuntimeConfig:
         resolved_url, proxy_url_selected = resolve_api_base_url(api_url)
         return cls(
             api_base_url=resolved_url,
+            api_source="--api-url" if api_url and api_url.strip() else next((name for name in ("NAIJ_API_BASE_URL", "NITRO_API_BASE_URL", "PROXY_URL") if clean_env_value(name)), "default"),
+            proxy_source="--submission-proxy" if submission_proxy else next((name for name in ("NAIJ_SUBMISSION_PROXY", "NITRO_SUBMISSION_PROXY") if clean_env_value(name) is not None), "PROXY_URL" if proxy_url_selected else "default"),
             submission_proxy=resolve_submission_proxy(
                 submission_proxy, proxy_url_selected
             ),

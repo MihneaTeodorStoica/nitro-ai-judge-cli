@@ -64,6 +64,21 @@ persistence remain part of the competition contract.
 
 ## Operations and API
 
+The checked-in [OpenAPI 3.1 contract](play-manager.openapi.json) is served at
+`GET /nitro/api/v1/openapi.json` without credentials (Host validation still
+applies). `manager/openapi.py` generates it using only the standard library;
+unit tests validate the schema, checked-in copy, and registered route parity.
+It describes bearer/session authentication, CSRF plus Origin requirements,
+202 receipts, errors, SSE and NDJSON framing. Streaming routes use
+`x-stream-format` extensions. No runtime OpenAPI dependency is installed.
+
+`GET /nitro/api/v1/operations` is authenticated and returns bounded redacted
+summaries plus `next_offset`. Filters are `competition`, `action`, and `status`;
+`limit` is 1–200 and `offset` is nonnegative. Summaries include created/started/
+finished timestamps, duration, stage, and bounded failure text, but no option,
+result, event, or log payloads. `naij play operations` exposes those filters;
+`naij play operation ID [--wait | --cancel]` uses the exact operation ID.
+
 Competition slugs must already be canonical lowercase Nitro slugs; invalid,
 reserved, or ambiguous values are rejected. Every long action returns HTTP 202
 and an operation UUID. Per-competition locking reuses identical active
@@ -75,8 +90,9 @@ routes, actions, logs and log following, operation snapshots/cancellation, and
 credential synchronization. `GET /nitro/api/v1/events` streams a `sync` event
 on connection, coalesced `refresh` invalidations, and 15-second keepalives.
 `GET /nitro/api/v1/competitions?cached=true` returns SQLite snapshots without
-Docker discovery or Nitro requests. Info and health are public. All other API
-routes require the private CLI bearer or a browser session.
+Docker discovery or Nitro requests. Info, health, the contract, and the dashboard
+login endpoint are public. Other API routes require the private CLI bearer or a
+browser session.
 
 The dashboard uses one event stream after its first load and silently fetches
 the cached snapshot after invalidation. Manual Refresh remains the full Docker

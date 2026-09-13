@@ -2,6 +2,8 @@ FROM docker:27-cli AS docker-cli
 
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.description="Nitro AI Judge Play manager: manages persistent local competition workspaces and Jupyter environments."
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1

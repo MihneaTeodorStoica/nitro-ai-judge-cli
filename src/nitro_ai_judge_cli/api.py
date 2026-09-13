@@ -188,6 +188,7 @@ def request(
     data: bytes | None = None,
     timeout: int = 30,
     base_url: str = BASE_URL,
+    output: Any = None,
 ) -> tuple[int, bytes, dict[str, str]]:
     url = f"{base_url.rstrip('/')}{path}"
     if params:
@@ -224,11 +225,12 @@ def request(
         try:
             with _open_once(req, timeout) as resp:
                 status = resp.status
-                body = resp.read()
                 response_headers = dict(resp.headers.items())
+                from .transfers import receive
+                body = receive(resp, status, response_headers, output)
         except urllib_error.HTTPError as exc:
             try:
-                body = exc.read()
+                body = exc.read(65536)
             except Exception:
                 body = b""
             status = exc.code
