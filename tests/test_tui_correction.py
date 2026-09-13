@@ -27,7 +27,10 @@ class TUIRequirements(unittest.IsolatedAsyncioTestCase):
                         app.action_filter()
                         field = app.query_one('#overview-filter', Input)
                         field.value = 'needle'
-                        await pilot.pause()
+                        for _ in range(40):
+                            if len(app.overview_matches) == 2:
+                                break
+                            await pilot.pause(0.05)
                         self.assertEqual(len(app.overview_matches), 2)
                         await pilot.press('enter','f3')
                         await pilot.pause()

@@ -1290,7 +1290,12 @@ class NitroTUI(App[int]):
         self._apply_layout(event.size.width, event.size.height)
 
     def _apply_layout(self, width: int, height: int) -> None:
-        main = self.query_one("#main", Horizontal)
+        # Resize/tab events already queued by Textual may be delivered while the
+        # default screen is being torn down.  The layout no longer exists then.
+        mains = self.query("#main")
+        if not mains:
+            return
+        main = mains.first(Horizontal)
         main.remove_class(
             "-compact",
             "-contests-only",
