@@ -165,6 +165,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.MANAGER_IMAGE }}:edge
+          annotations: |
+            index,manifest:org.opencontainers.image.description=Nitro AI Judge Play manager: manages persistent local competition workspaces and Jupyter environments.
 
   manager-publish:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -205,6 +207,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.MANAGER_IMAGE }}:${{ steps.version.outputs.version }}
+          annotations: |
+            index,manifest:org.opencontainers.image.description=Nitro AI Judge Play manager: manages persistent local competition workspaces and Jupyter environments.
       - name: Update mutable release tags after exact image succeeds
         shell: bash
         run: |
