@@ -1682,6 +1682,10 @@ class NitroTUI(App[int]):
 
     @on(Tabs.TabActivated, "#view-nav")
     def view_tab_activated(self, event: Tabs.TabActivated) -> None:
+        # A programmatic tab update can leave this event queued until after
+        # Textual has removed the final screen during shutdown.
+        if not self.is_running or not self.screen_stack or not self.query("#main"):
+            return
         number = {
             "tab-overview": 1,
             "tab-data": 2,
@@ -2544,6 +2548,8 @@ class NitroTUI(App[int]):
         return (["cancel_play"] if operation.get("status") in {"queued", "running"} else ["refresh"]) + ["toggle_logs", "play_menu", "help", "quit"]
 
     def _refresh_context_bindings(self) -> None:
+        if not self.is_running or not self.screen_stack:
+            return
         visible = set(self.context_actions())
         primary_keys = {binding.key for binding in self.BINDINGS if binding.action in visible and binding.key != "ctrl+d"}
         # Only presentation changes: hidden bindings still work in other panes.
